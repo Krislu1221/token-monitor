@@ -31,8 +31,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/<你的用户名>/token-monitor.git
-cd token-monitor
+git clone https://github.com/Krislu1221/token-monitor.git ~/model-monitor
+cd ~/model-monitor
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -118,6 +118,11 @@ cd packaging/build
 
 App 是个薄壳：双击 → 确保后台服务在跑 → 打开面板 → 自己退出。
 **关掉 App 或面板页面，监控仍在后台运行**（由 launchd 托管）。
+
+默认从 `~/model-monitor` 找程序；装到别处时设置 `TOKEN_MONITOR_DIR=/你的路径`。
+
+> 从 Release 下载的 `.app` 是 **ad-hoc 签名（未公证）**，首次打开可能被 Gatekeeper 拦。
+> 右键 → 打开，或执行：`xattr -dr com.apple.quarantine "/Applications/Token monitor.app"`
 
 ## 结构
 
