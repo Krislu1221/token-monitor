@@ -1,0 +1,12 @@
+{
+  "_comment": "复制为 config.json 后填入自己的密钥。config.json 已被 .gitignore 排除，不会提交。也可改用环境变量（优先级高于本文件）。",
+  "deepseek": "sk-你的DeepSeekKey",
+  "zhipu": "你的智谱Key",
+  "volc_agent_plan": "ark-你的火山AgentPlanKey",
+  "volc_ak": "AKLT你的火山AK",
+  "volc_sk": "你的火山SK",
+  "minimax": "sk-cp-你的MiniMaxKey",
+  "qwen": "sk-你的阿里云百炼Key",
+  "aliyun_ak": "LTAI你的阿里云AK",
+  "aliyun_sk": "你的阿里云SK"
+}

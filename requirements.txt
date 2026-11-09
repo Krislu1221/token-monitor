@@ -1,0 +1,4 @@
+# 数据服务（网页面板）核心依赖：无 —— 只用 Python 标准库
+# 菜单栏图标需要 rumps；登录辅助脚本需要 playwright
+rumps>=0.4.0
+playwright>=1.40.0

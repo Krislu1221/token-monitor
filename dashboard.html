@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Monitor · 模型平台用量监控</title>
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#0f1520; --card:#141a26; --card2:#18202f;
+    --line:#1f2937; --line2:#273449;
+    --txt:#e8ecf4; --sub:#8b95a7; --dim:#5b6577;
+    --green:#22c55e; --orange:#f59e0b; --red:#ef4444;
+    --ds:#3b82f6; --zp:#8b5cf6; --qw:#f97316; --vc:#06b6d4; --mm:#ec4899; --mi:#ff6900;
+    --radius:16px; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-font-smoothing:antialiased}
+  body{
+    background:
+      radial-gradient(1100px 500px at 85% -10%, rgba(59,130,246,.10), transparent 60%),
+      radial-gradient(900px 500px at -10% 20%, rgba(139,92,246,.08), transparent 60%),
+      var(--bg);
+    color:var(--txt);
+    font:14px/1.55 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+    min-height:100vh; padding:26px clamp(16px,4vw,40px) 40px;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand .logo{
+    width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-size:20px;
+    background:linear-gradient(135deg,#1d4ed8,#7c3aed);box-shadow:var(--shadow)
+  }
+  h1{font-size:19px;font-weight:700;letter-spacing:.2px}
+  h1 small{display:block;font-size:11.5px;color:var(--sub);font-weight:500;margin-top:1px}
+  .spacer{flex:1}
+  .pill{
+    display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:99px;
+    background:var(--card);border:1px solid var(--line);color:var(--sub);font-size:12px
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:0 0 auto}
+  .dot.ok{background:var(--green);box-shadow:0 0 8px rgba(34,197,94,.6)}
+  .dot.warn{background:var(--orange);box-shadow:0 0 8px rgba(245,158,11,.5)}
+  .dot.err{background:var(--red);box-shadow:0 0 8px rgba(239,68,68,.5)}
+  button{
+    background:linear-gradient(135deg,#2563eb,#6d28d9);color:#fff;border:0;border-radius:10px;
+    padding:7px 14px;cursor:pointer;font-size:12.5px;font-weight:600;transition:.15s
+  }
+  button:hover{filter:brightness(1.12)}
+  button.ghost{background:var(--card);color:var(--txt);border:1px solid var(--line)}
+  button.ghost:hover{border-color:var(--line2);filter:none}
+
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:18px 0 16px}
+  .mini{display:flex;align-items:center;gap:11px;background:var(--card);border:1px solid var(--line);
+    border-radius:13px;padding:10px 13px;transition:.15s}
+  .mini:hover{border-color:var(--line2)}
+  .mini .sq{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:15px;color:#fff}
+  .mini .t{font-size:11.5px;color:var(--sub)}
+  .mini .v{font-size:15.5px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
+  .card{
+    background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
+    border-radius:var(--radius);padding:16px 16px 12px;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;gap:10px;position:relative;overflow:hidden
+  }
+  .card::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;opacity:.7}
+  .card[data-c="ds"]::before{background:linear-gradient(90deg,var(--ds),transparent)}
+  .card[data-c="zp"]::before{background:linear-gradient(90deg,var(--zp),transparent)}
+  .card[data-c="qw"]::before{background:linear-gradient(90deg,var(--qw),transparent)}
+  .card[data-c="vc"]::before{background:linear-gradient(90deg,var(--vc),transparent)}
+  .card[data-c="mi"]::before{background:linear-gradient(90deg,var(--mi),transparent)}
+
+  .chead{display:flex;align-items:center;gap:10px}
+  .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:17px;color:#fff}
+  .chead .name{font-weight:700;font-size:15px}
+  .kind{color:var(--sub);font-size:11px;background:rgba(255,255,255,.05);border:1px solid var(--line);
+    padding:2px 8px;border-radius:99px;margin-left:2px}
+  a.console{margin-left:auto;color:var(--sub);text-decoration:none;font-size:12px;opacity:.9}
+  a.console:hover{color:#fff}
+  .stamp{color:var(--dim);font-size:11px}
+  .hero{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:2px}
+  .big{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+  .unit{color:var(--sub);font-size:13px}
+  .rows{margin-top:2px}
+  .row{display:flex;justify-content:space-between;padding:4.5px 0;border-top:1px dashed var(--line);font-size:13px}
+  .row:first-child{border-top:0}
+  .row .lbl{color:var(--sub);font-size:12px}
+  .num{font-variant-numeric:tabular-nums;font-weight:600}
+  .g{color:var(--green)} .o{color:var(--orange)} .r{color:var(--red)} .dim{color:var(--dim)}
+  .note,.errbox{border-radius:10px;padding:8px 11px;font-size:12px;line-height:1.5}
+  .note{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);color:#fcd34d}
+  .errbox{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);color:#fca5a5;word-break:break-all}
+  .spark{display:flex;align-items:flex-end;gap:8px;border-top:1px dashed var(--line);padding-top:8px;margin-top:auto}
+  .spark svg{display:block;flex:1}
+  .spark .tag{font-size:10.5px;color:var(--dim);white-space:nowrap;padding-bottom:2px}
+  .manual{margin-top:2px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .manual .mt{color:var(--sub);font-size:11.5px}
+  .manual input{background:rgba(0,0,0,.28);border:1px solid var(--line);color:var(--txt);border-radius:8px;
+    padding:4px 9px;width:110px;font-size:12.5px}
+  .manual input:focus{outline:none;border-color:#3b82f6}
+  .manual .saved{color:var(--green);font-size:11px}
+  footer{margin-top:22px;color:var(--dim);font-size:11.5px;text-align:center;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo">📊</div>
+      <h1>模型平台监控<small>DeepSeek · 智谱 · 火山方舟 · 阿里云 · MiniMax · 小米 MiMo</small></h1>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill"><span class="dot" id="aliveDot"></span><span id="lastUpdated">加载中…</span></span>
+    <button class="ghost" id="refreshBtn">立即刷新</button>
+  </header>
+
+  <div class="summary" id="summary"></div>
+  <div class="grid" id="grid"><div class="note">加载中…</div></div>
+  <footer>本地面板 · 仅 127.0.0.1 · 每 5 分钟拉取一次平台数据 · 页面 60s 自刷 · 数据只进本机 history.json</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const ACCENT = {ds:"var(--ds)",zp:"var(--zp)",qw:"var(--qw)",vc:"var(--vc)",mm:"var(--mm)",mi:"var(--mi)"};
+const SERIES = {deepseek:{k:"deepseek",c:"#3b82f6",tag:"近10h 余额 ¥"},zhipu:{k:"zhipu",c:"#8b5cf6",tag:"近10h 余额 ¥"},
+                qwen:{k:"qwen",c:"#f97316",tag:"近10h 余额 ¥"},volc:{k:"volc_weekly",c:"#06b6d4",tag:"近10h 周配额 %"},minimax:{k:"minimax_m",c:"#ec4899",tag:"近10h M Plan 周用量 %"},
+                mimo:{k:"mimo_tp",c:"#ff6900",tag:"近10h TP 套餐用量 %"}};
+
+function esc(s){const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
+function fmt(v,dp=2){return (typeof v==="number")?v.toFixed(dp):"—";}
+function pctClass(p){return p>=90?"r":p>=70?"o":"g";}
+function balClass(v){return v<10?"r":v<30?"o":"g";}
+function tok(v){if(v==null||!isFinite(Number(v)))return "—";const n=Number(v);if(n>=1e9)return (n/1e9).toFixed(2)+"B";if(n>=1e6)return (n/1e6).toFixed(2)+"M";if(n>=1e3)return (n/1e3).toFixed(1)+"K";return String(n);}
+
+function sparkSVG(hist,key,color){
+  const vals=hist.map(h=>h[key]).filter(v=>typeof v==="number");
+  if(vals.length<2) return `<span class="dim" style="font-size:10.5px">趋势积累中…</span>`;
+  const W=180,H=30,P=2;
+  const min=Math.min(...vals),max=Math.max(...vals),span=(max-min)||1;
+  const pts=vals.map((v,i)=>`${(i/(vals.length-1)*(W-2*P)+P).toFixed(1)},${(H-P-((v-min)/span)*(H-2*P)).toFixed(1)}`);
+  const last=vals[vals.length-1];
+  const ly=(H-P-((last-min)/span)*(H-2*P)).toFixed(1);
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" opacity=".92"/>
+    <circle cx="${W-P}" cy="${ly}" r="2.4" fill="${color}"/></svg>`;
+}
+
+function miniChips(data){
+  const map={deepseek:["ds","DeepSeek"],zhipu:["zp","智谱"],volc:["vc","火山"],qwen:["qw","阿里云"],minimax:["mm","MiniMax"],mimo:["mi","MiMo"]};
+  const colors={ds:"#3b82f6",zp:"#8b5cf6",qw:"#f97316",vc:"#06b6d4",mm:"#ec4899",mi:"#ff6900"};
+  return data.providers.map(p=>{
+    const [ck,name]=map[p.id]||[];
+    let v="—",color="";
+    const a=p.auto||{};
+    if(p.id==="deepseek"&&a.ok){v=`¥${fmt((a.balance_infos||[{}])[0].total)}`;color=balClass(parseFloat(v.slice(1)));}
+    else if(p.id==="zhipu"&&a.ok){v=`¥${fmt(a.available)}`;color=balClass(a.available);}
+    else if(p.id==="volc"&&a.ok){const w=(a.periods||[]).find(x=>x.label==="weekly");v=w?`${w.pct.toFixed(0)}%`:"—";color=w?pctClass(w.pct):"dim";}
+    else if(p.id==="qwen"&&a.ok){v=`¥${fmt(a.available)}`;color=balClass(a.available);}
+    else if(p.id==="minimax"&&a.ok&&a.available!=null){v=`¥${fmt(a.available)}`;color=balClass(a.available);}
+    else if(p.id==="mimo"&&a.ok){const pl=(a.periods||[]).find(x=>x.label==="plan");v=pl?`${pl.pct.toFixed(1)}%`:"—";color=pl?pctClass(pl.pct):"dim";}
+    else v="…";
+    return `<div class="mini"><div class="sq" style="background:${colors[ck]||'#3f4a5f'}">${p.emoji}</div>
+      <div><div class="t">${name}</div><div class="v ${color||"dim"}">${esc(v)}</div></div></div>`;
+  }).join("");
+}
+
+function render(data,hist){
+  $("lastUpdated").textContent="更新于 "+data.updated_at;
+  $("aliveDot").className="dot ok";
+  $("summary").innerHTML=miniChips(data);
+  const grid=$("grid");grid.innerHTML="";
+  const byId={};
+  data.providers.forEach(p=>byId[p.id]=p);
+  const cardIds=["deepseek","zhipu","volc","qwen","minimax","mimo"];
+  for(const pid of cardIds){
+    const p=byId[pid];if(!p)continue;
+    const a=p.auto||{};
+    const c=ACCENT[pid==="qwen"?"qw":pid];
+    const ck=SERIES[pid];
+    const card=document.createElement("div");
+    card.className="card";card.dataset.c={deepseek:"ds",zhipu:"zp",qwen:"qw",volc:"vc",minimax:"mm",mimo:"mi"}[pid];
+    let hero="",rows="",pillCls="dot",badgeColor="#3f4a5f",badgeTxt=p.emoji;
+    const badgeClr={ds:"#2563eb",zp:"#7c3aed",qw:"#ea580c",vc:"#0891b2",mm:"#db2777",mi:"#ea580c"};
+    badgeColor=badgeClr[card.dataset.c];
+
+    if(pid==="deepseek"){
+      if(a.ok){const b=(a.balance_infos||[{}])[0];
+        pillCls="dot "+(b.total<10?"err":b.total<30?"warn":"ok");
+        hero=`<span class="big ${balClass(b.total)}">¥${fmt(b.total)}</span><span class="unit">总余额</span>`;
+        rows=`<div class="row"><span class="lbl">充值余额</span><span class="num">¥${fmt(b.topped_up)}</span></div>
+              <div class="row"><span class="lbl">赠金余额</span><span class="num dim">¥${fmt(b.granted)}</span></div>`;
+      }else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    else if(pid==="zhipu"){
+      if(a.ok){pillCls="dot "+(a.available<10?"err":a.available<30?"warn":"ok");
+        hero=`<span class="big ${balClass(a.available)}">¥${fmt(a.available)}</span><span class="unit">可用余额</span>`;
+        rows=`<div class="row"><span class="lbl">累计充值</span><span class="num">¥${fmt(a.recharged)}</span></div>
+              <div class="row"><span class="lbl">累计消费</span><span class="num">¥${fmt(a.spent)}</span></div>
+              ${a.today_spent!=null?`<div class="row"><span class="lbl">今日消费</span><span class="num">¥${fmt(a.today_spent)}</span></div>`:""}`;
+        if(a.cp){
+          const f=a.cp.five_hour,w=a.cp.weekly;
+          rows+=`<div class="row"><span class="lbl">Coding Plan 5h 用量</span><span class="num ${f?pctClass(f.pct):""}">${f?f.pct.toFixed(0)+"%":"—"}${f&&f.resets_at?`<span class="dim" style="font-weight:400;margin-left:4px">重置 ${esc(f.resets_at)}</span>`:""}</span></div>
+                <div class="row"><span class="lbl">Coding Plan 周用量</span><span class="num ${w?pctClass(w.pct):""}">${w?w.pct.toFixed(0)+"%":"—"}${w&&w.resets_at?`<span class="dim" style="font-weight:400;margin-left:4px">重置 ${esc(w.resets_at)}</span>`:""}</span></div>`;
+        }else if(a.cp_note){
+          rows+=`<div class="row"><span class="lbl">Coding Plan</span><span class="num dim">未订阅(订阅后自动显示 5h/周用量)</span></div>`;
+        }
+      }else if(a.needs_login){pillCls="dot err";hero=`<span class="big r">需重登</span>`;rows=`<div class="errbox">${esc(a.error||"智谱登录态失效")}</div>`;}
+      else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    else if(pid==="volc"){
+      const lblShort=l=>({weekly:"w",monthly:"m",session:"5h",daily:"d","5h":"5h"}[l]||l);
+      const periodRows=(periods,scale)=>(periods||[]).map(x=>`<div class="row"><span class="lbl">${esc(lblShort(x.label))}${x.total?` (${fmt(x.used,0)}/${fmt(x.total,0)})`:""}</span>
+          <span class="num ${pctClass(x.pct)}">${x.pct.toFixed(scale)}%${x.reset_at?`<span class="dim" style="font-weight:400;margin-left:6px">重置 ${esc(x.reset_at)}</span>`:""}</span></div>`).join("");
+      if(a.ok&&a.subscribed){
+        pillCls="dot "+(a.periods&&a.periods.length?"ok":"dim");
+        const wk=(a.periods||[]).find(x=>x.label==="weekly");
+        hero=`<span class="big ${wk?pctClass(wk.pct):""}">${wk?wk.pct.toFixed(0)+"%":""}</span><span class="unit">AP 周配额</span>`;
+        rows=`<div class="row"><span class="lbl" style="font-weight:600">Agent Plan${a.tier?` (${esc(a.tier)})`:""}</span><span class="num dim">${a.via==="aksk"?"AK/SK":"SSO"}</span></div>`
+             +periodRows(a.periods,0);
+        const c=a.coding;
+        if(c){
+          if(c.ok&&c.subscribed){
+            const cpScale=(c.periods||[]).some(x=>x.pct>0&&x.pct<1)?2:0;
+            rows+=`<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">Coding Plan</span><span class="num dim">${c.via==="aksk"?"AK/SK":"SSO"}</span></div>`
+                  +periodRows(c.periods,cpScale);
+          }else if(c.needs_login){rows+=`<div class="row" style="margin-top:8px"><span class="lbl">Coding Plan</span><span class="num err">SSO 需重登</span></div>`;}
+          else if(c.needs_permission){rows+=`<div class="row" style="margin-top:8px"><span class="lbl">Coding Plan</span><span class="num err">AK/SK 缺权限</span></div>`;}
+          else if(c.ok&&c.subscribed===false){rows+=`<div class="row" style="margin-top:8px"><span class="lbl">Coding Plan</span><span class="num dim">未订阅</span></div>`;}
+          else{rows+=`<div class="row" style="margin-top:8px"><span class="lbl">Coding Plan</span><span class="num dim">${esc(String(c.error||"—").slice(0,60))}</span></div>`;}
+        }
+      }else if(a.needs_login){pillCls="dot err";hero=`<span class="big r">需重登</span>`;rows=`<div class="errbox">${esc(a.error||"SSO 失效")}</div>`;}
+      else if(a.needs_permission){pillCls="dot err";hero=`<span class="big r">无权限</span>`;rows=`<div class="errbox">${esc(a.error||"")}</div>`;}
+      else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    else if(pid==="minimax"){
+      const lblShort=l=>({weekly:"w",monthly:"m",session:"5h",daily:"d","5h":"5h"}[l]||l);
+      const periodRows=(periods,scale)=>(periods||[]).map(x=>`<div class="row"><span class="lbl">${esc(lblShort(x.label))}</span>
+          <span class="num ${pctClass(x.pct)}">${x.pct.toFixed(scale)}%${x.reset_at?`<span class="dim" style="font-weight:400;margin-left:6px">重置 ${esc(x.reset_at)}</span>`:""}</span></div>`).join("");
+      const plan=a.plan;
+      let planRows="";
+      if(plan){
+        if(plan.ok&&plan.subscribed){
+          const scale=(plan.periods||[]).some(x=>x.pct>0&&x.pct<1)?2:0;
+          planRows=`<div class="row"><span class="lbl" style="font-weight:600">M Plan</span><span class="num dim">API key</span></div>`
+                   +periodRows(plan.periods,scale);
+        }else if(plan.ok&&plan.subscribed===false){planRows=`<div class="row"><span class="lbl" style="font-weight:600">M Plan</span><span class="num dim">未订阅</span></div>`;}
+        else if(plan.needs_key){planRows=`<div class="row"><span class="lbl" style="font-weight:600">M Plan</span><span class="num err">缺 key</span></div>`;}
+        else{planRows=`<div class="row"><span class="lbl" style="font-weight:600">M Plan</span><span class="num dim">${esc(String(plan.error||"—").slice(0,56))}</span></div>`;}
+      }
+      let balRows="";
+      if(a.ok&&a.available!=null){
+        balRows=`<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">按量余额</span><span class="num ${balClass(a.available)}">¥${fmt(a.available)}</span></div>
+              <div class="row"><span class="lbl">现金 / 代金券</span><span class="num dim">¥${fmt(a.cash)} / ¥${fmt(a.voucher)}</span></div>
+              <div class="row"><span class="lbl">授信 / 欠费</span><span class="num dim">¥${fmt(a.credit)} / ¥${fmt(a.owed)}</span></div>
+              ${a.total_recharge!=null?`<div class="row"><span class="lbl">累计充值 / 消费</span><span class="num dim">¥${fmt(a.total_recharge)} / ¥${fmt(a.total_usage)}</span></div>`:""}`;
+      }else if(a.needs_login){
+        balRows=`<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">按量余额</span><span class="num err">需重登</span></div>`;
+      }
+      const wk=(plan&&plan.ok&&plan.subscribed)?(plan.periods||[]).find(x=>x.label==="weekly"):null;
+      if(wk){
+        pillCls="dot "+(wk.pct>=90?"err":wk.pct>=70?"warn":"ok");
+        hero=`<span class="big ${pctClass(wk.pct)}">${wk.pct.toFixed(1)}%</span><span class="unit">M Plan 周用量</span>`;
+      }else if(a.ok&&a.available!=null){
+        pillCls="dot "+(a.available<10?"err":a.available<30?"warn":"ok");
+        hero=`<span class="big ${balClass(a.available)}">¥${fmt(a.available)}</span><span class="unit">可用额度</span>`;
+      }else if(plan&&plan.ok&&plan.subscribed){
+        const p0=(plan.periods||[])[0];
+        pillCls="dot ok";hero=`<span class="big ${p0?pctClass(p0.pct):""}">${p0?p0.pct.toFixed(1)+"%":""}</span><span class="unit">M Plan 用量</span>`;
+      }else{pillCls="dot err";hero=`<span class="big r">—</span>`;}
+      rows=planRows+balRows+((planRows||balRows)?"":errboxHtml((plan&&plan.error)||a.error));
+    }
+    else if(pid==="mimo"){
+      const periods=a.periods||[];
+      const plan=periods.find(x=>x.label==="plan");
+      const comp=periods.find(x=>x.label==="补偿");
+      const month=periods.find(x=>x.label==="month");
+      const rowP=(x,name)=>x?`<div class="row"><span class="lbl">${name}</span><span class="num ${pctClass(x.pct)}">${x.pct.toFixed(2)}%${x.total?`<span class="dim" style="font-weight:400;margin-left:6px">${tok(x.used)}/${tok(x.total)}</span>`:""}${x.reset_at?`<span class="dim" style="font-weight:400;margin-left:6px">重置 ${esc(x.reset_at)}</span>`:""}</span></div>`:"";
+      if(a.ok&&a.subscribed){
+        pillCls="dot "+((plan&&plan.pct>=90)?"err":(plan&&plan.pct>=70)?"warn":"ok");
+        hero=plan?`<span class="big ${pctClass(plan.pct)}">${plan.pct.toFixed(1)}%</span><span class="unit">Token Plan 用量</span>`:`<span class="big">—</span>`;
+        rows=rowP(plan,"套餐额度")+rowP(comp,"补偿额度")+rowP(month,"本月额度")
+             +`<div class="row" style="margin-top:6px"><span class="lbl">套餐</span><span class="num dim">${esc(a.plan_code||"—")}${a.expired?" · 已过期":""}</span></div>`;
+        if(a.balance!=null){rows+=`<div class="row"><span class="lbl">账户余额</span><span class="num ${balClass(a.balance)}">¥${fmt(a.balance)}</span></div>`;}
+      }else if(a.needs_login){
+        pillCls="dot err";hero=`<span class="big r">需重登</span>`;
+        rows=`<div class="errbox">${esc(a.error||"MiMo 登录态失效")}<br><br>在 terminal 里运行一次:<br><code>.venv/bin/python mimo_login.py</code></div>`;
+      }else if(a.ok&&a.subscribed===false){
+        pillCls="dot warn";hero=`<span class="big o">未订阅</span>`;
+        rows=`<div class="note">${esc(a.note||"未发现 Token Plan 额度")}</div>`+(a.balance!=null?`<div class="row"><span class="lbl">账户余额</span><span class="num">¥${fmt(a.balance)}</span></div>`:"");
+      }else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    else{ // qwen
+      if(a.ok){pillCls="dot "+(a.available<30?"warn":"ok");
+        hero=`<span class="big ${balClass(a.available)}">¥${fmt(a.available)}</span><span class="unit">可用余额</span>`;
+        rows=`<div class="row"><span class="lbl">现金余额</span><span class="num">¥${fmt(a.cash)}</span></div>
+              <div class="row"><span class="lbl">可用信用</span><span class="num dim">¥${fmt(a.credit)}</span></div>`;
+      }else if(a.needs_setup){pillCls="dot err";hero=`<span class="big dim">待配置</span>`;rows=`<div class="note">${esc(a.needs_setup)}</div>`;}
+      else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    const mv=p.manual;
+    card.innerHTML=`
+      <div class="chead"><span class="dot ${pillCls.replace("dot ","")}" style="${pillCls.includes("ok")?"":""}"></span>
+        <div class="badge" style="background:${badgeColor}">${badgeTxt}</div>
+        <span class="name">${esc(p.label)}</span><span class="kind">${esc(p.kind)}</span>
+        <a class="console" href="${p.console}" target="_blank">控制台 ↗</a></div>
+      <div class="stamp">查询于 ${esc(p.queried_at)} · ${authText(p)}</div>
+      <div class="hero">${hero}</div>
+      <div class="rows">${rows}</div>
+      ${`<div class="spark"><span class="tag">${ck.tag}</span>${sparkSVG(hist,ck.k,ck.c)}</div>`}
+      <div class="manual"><span class="mt">备忘余额:</span>
+        <input id="m_${pid}" placeholder="如 ¥120" value="${mv?esc(mv.value):""}">
+        <button class="ghost" data-save="${pid}">存</button>
+        ${mv?`<span class="saved">已存 ${esc(mv.at)}</span>`:""}</div>`;
+    grid.appendChild(card);
+  }
+  function authText(p){
+    if(p.id==="zhipu")return p.auto&&p.auto.needs_login?"⚠️ 登录态失效":"🧠 登录态已就位";
+    if(p.id==="volc")return p.auth_kind==="AK/SK"?"🔑 AK/SK 长期":"🦺 SSO 兜底";
+    if(p.id==="mimo")return p.key_present?"🍪 控制台登录态":"⚠️ 未登录(需 mimo_login.py)";
+    if(p.id==="minimax")return p.has_key?"🔑 API key":"⚠️ 未配置 key";
+    return p.has_key===false?"⚠️ 本机未找到 key":"🔑 key 已就位";
+  }
+  function errboxHtml(e){return `<div class="errbox">${esc(e||"查询失败")}</div>`;}
+}
+
+async function load(force){
+  try{
+    const [s,h]=await Promise.all([
+      fetch(force?"/api/poll":"/api/status").then(r=>{if(!r.ok)throw 0;return r.json()}),
+      fetch("/api/history").then(r=>r.json()).catch(()=>[])
+    ]);
+    $("aliveDot").className="dot ok";
+    render(s,h||[]);
+  }catch(e){
+    $("aliveDot").className="dot err";
+    $("lastUpdated").textContent="面板服务离线";
+  }
+}
+
+$("refreshBtn").onclick=()=>load(true);
+document.addEventListener("click",async ev=>{
+  const b=ev.target.closest("button[data-save]");if(!b)return;
+  try{
+    const r=await fetch("/api/manual",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({provider:b.dataset.save,value:(document.getElementById("m_"+b.dataset.save).value||"").trim()})});
+    if(r.ok)load(false);
+  }catch(e){alert("保存失败: "+e.message);}
+});
+load(false);
+setInterval(()=>load(false),60000);
+</script>
+</body>
+</html>
