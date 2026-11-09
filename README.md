@@ -5,9 +5,14 @@
 
 **支持 6 家平台**：DeepSeek · 智谱 GLM · 火山方舟（Agent Plan + Coding Plan）· 阿里云百炼 · MiniMax（M Plan）· 小米 MiMo（Token Plan）
 
-<img width="1200" alt="panel" src="docs/panel.png">
+<p align="center">
+  <img width="76%" alt="网页面板" src="docs/panel.png">
+  <img width="22%" alt="菜单栏" src="docs/menubar.png">
+</p>
 
-<p align="center"><sub>示例截图：<b>智谱</b>卡片展示的是登录态过期时的样子 —— 会明确写出原因和修复命令，不会静默失败。</sub></p>
+<p align="center"><sub><b>左：</b>网页面板（卡片 + 趋势线）　<b>右：</b>macOS 菜单栏下拉（顶部图标常驻，不占 Dock）</sub></p>
+
+> 截图说明：<b>智谱</b>卡片展示的是登录态过期时的样子 —— 会明确写出原因和修复命令，不会静默失败；<b>MiniMax</b> 余额同理（M Plan 配额仍正常显示）。
 
 ---
 
@@ -25,7 +30,18 @@
 每种指标的展示形态：
 
 - **网页面板** `http://127.0.0.1:8317` — 卡片式汇总、近期趋势线（sparkline）、跳转各平台控制台、本地"备忘余额"手填
-- **菜单栏** — 顶部常驻图标，下拉逐行显示各平台关键数字（不占 Dock）
+- **菜单栏** — 顶部常驻图标（不占 Dock），下拉逐行显示各平台关键数字：
+
+  ```
+  DeepSeek: ¥38.09
+  智谱: 登录态失效
+  火山AP: 5h 0.0% w 0.0% m 0.0%
+  火山CP: 5h 42% w 22% m 37%
+  千问: ¥7.75
+  MiniMax M: 5h 0.0% w 15%
+  MiMo: ¥0.00
+  MiMo TP: 79% 月 79%
+  ```
 - **JSON API** — `/api/status`、`/api/poll`、`/api/history`，方便接自己的脚本/桌面组件
 
 ## 快速开始
