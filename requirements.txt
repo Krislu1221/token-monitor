@@ -1,4 +1,9 @@
 # 数据服务（网页面板）核心依赖：无 —— 只用 Python 标准库
-# 菜单栏图标需要 rumps；登录辅助脚本需要 playwright
+# 菜单栏图标
 rumps>=0.4.0
+
+# 登录辅助脚本（mimo_login / minimax_login / zhipu_login）
 playwright>=1.40.0
+
+# 阿里云百炼余额（可选；不装则该卡片提示"缺少 SDK"，其余平台不受影响）
+aliyun-python-sdk-bssopenapi>=2.0.0
