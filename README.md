@@ -22,7 +22,7 @@
 |---|---|---|
 | **DeepSeek** | 账户余额（充值 / 赠金） | API Key |
 | **智谱 GLM** | 余额、累计充值与消费；Coding Plan 的 5h / 周用量 | API Key + 控制台登录态 |
-| **火山方舟** | **Agent Plan** 与 **Coding Plan** 两套套餐的 5h / 周 / 月用量与重置时间 | AK/SK 直查 OpenAPI（长期有效）；无权限时回落 `arkcli` SSO |
+| **火山方舟** | **Agent Plan** 与 **Coding Plan** 两套套餐的 5h / 周 / 月用量与重置时间；**按量付费账户余额**（可用 / 现金 / 信用额度 / 冻结 / 欠费） | 套餐：AK/SK 直查 OpenAPI（无权限时回落 `arkcli` SSO）；余额：Billing OpenAPI `QueryBalanceAcct`（需 `billing:QueryBalanceAcct` 权限） |
 | **阿里云百炼** | 账户余额 | 只读 RAM 子账号 AK/SK |
 | **MiniMax** | **M Plan** 的 5h / 周用量；按量余额 | API Key（额度）/ 控制台登录态（余额） |
 | **小米 MiMo** | **Token Plan** 套餐用量（含本月）、余额、套餐周期 | 控制台登录态 + 请求签名 |
@@ -37,6 +37,7 @@
   智谱: 登录态失效
   火山AP: 5h 0.0% w 0.0% m 0.0%
   火山CP: 5h 42% w 22% m 37%
+  火山余额: ¥19.87
   千问: ¥7.75
   MiniMax M: 5h 0.0% w 15%
   MiMo: ¥0.00
@@ -124,6 +125,15 @@ MiMo 控制台 API 在 2026-11 起要求请求签名（只带 cookie 会返回 `
 4. 签名失效时自动重取密钥重试一次，并用响应头 `x-server-time` 校准本机时钟偏差。
 
 详见 `poller.py` 的 `_mimo_sign_key()` / `_mimo_signed_get()`。
+
+### 火山引擎「按量付费」余额
+
+火山有两套账：**套餐额度**（Agent Plan / Coding Plan）和**按量付费账户余额**，两者互不相干。
+
+余额走 Billing OpenAPI（`billing.volcengineapi.com`，Action `QueryBalanceAcct`，Version `2022-01-01`），用同一个 AK/SK 签名，需要该子账号具备 `billing:QueryBalanceAcct` 权限（预置策略 `BillingCenterReadOnlyAccess` 即可）。返回可用余额、现金余额、信用额度、冻结金额与欠费。
+
+没有权限时面板会明确显示「缺 billing 权限」，不影响套餐额度那两行。
+
 
 ## 打包成 macOS App（可选）
 

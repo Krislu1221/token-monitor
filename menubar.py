@@ -138,6 +138,21 @@ def mimo_plan_short(prov):
         return "MiMo TP: 未订阅"
     return f"MiMo TP: {(a.get('error') or '查询失败')[:60]}"
 
+def volc_balance_short(prov):
+    """火山按量付费余额单独一行：火山余额: ¥19.87"""
+    if not prov:
+        return "火山余额: 缺失"
+    b = (prov.get("auto") or {}).get("balance")
+    if not b:
+        return "火山余额: 待查询"
+    if b.get("ok") and b.get("available") is not None:
+        return f"火山余额: ¥{float(b['available']):.2f}"
+    if b.get("needs_permission"):
+        return "火山余额: 缺 billing 权限"
+    if b.get("needs_setup"):
+        return "火山余额: 未配 AK/SK"
+    return f"火山余额: {(b.get('error') or '查询失败')[:50]}"
+
 class ModelMonitorApp(rumps.App):
     def __init__(self):
         icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "menubar.png")
@@ -146,6 +161,7 @@ class ModelMonitorApp(rumps.App):
         # 每个 provider 一行；火山在 AP 行下面再加一行 Coding Plan
         self.items_by_id = {}
         self.volc_coding_item = None
+        self.volc_balance_item = None
         self.minimax_plan_item = None
         self.mimo_plan_item = None
         menu_items = []
@@ -156,6 +172,8 @@ class ModelMonitorApp(rumps.App):
             if pid == "volc":
                 self.volc_coding_item = rumps.MenuItem("火山CP: 加载中…")
                 menu_items.append(self.volc_coding_item)
+                self.volc_balance_item = rumps.MenuItem("火山余额: 加载中…")
+                menu_items.append(self.volc_balance_item)
             if pid == "minimax":
                 self.minimax_plan_item = rumps.MenuItem("MiniMax M: 加载中…")
                 menu_items.append(self.minimax_plan_item)
@@ -183,6 +201,8 @@ class ModelMonitorApp(rumps.App):
                 self.items_by_id[pid].title = short(p) if p else f"{pid}: 缺失"
             if self.volc_coding_item is not None:
                 self.volc_coding_item.title = volc_coding_short(byid.get("volc"))
+            if self.volc_balance_item is not None:
+                self.volc_balance_item.title = volc_balance_short(byid.get("volc"))
             if self.minimax_plan_item is not None:
                 self.minimax_plan_item.title = minimax_plan_short(byid.get("minimax"))
             if self.mimo_plan_item is not None:

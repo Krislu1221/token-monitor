@@ -267,21 +267,22 @@ def query_volc_agentplan():
 # --------------------------------------------------------------------------
 _VOLC_HOST = "open.volcengineapi.com"
 
-def _volc_sign_req(ak, sk, action="GetAFPUsage", payload=None):
+def _volc_sign_req(ak, sk, action="GetAFPUsage", payload=None,
+                   host=_VOLC_HOST, service="ark", version="2024-01-01"):
     payload = payload or {}
     body = json.dumps(payload, separators=(",", ":"))
     payload_hash = hashlib.sha256(body.encode()).hexdigest()
     now = datetime.datetime.now(datetime.timezone.utc)
     xdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = xdate[:8]
-    query = {"Action": action, "Version": "2024-01-01"}
+    query = {"Action": action, "Version": version}
     cq = "&".join(f"{urllib.parse.quote(k)}={urllib.parse.quote(str(v))}"
                   for k, v in sorted(query.items()))
-    headers = {"host": _VOLC_HOST, "x-content-sha256": payload_hash, "x-date": xdate}
+    headers = {"host": host, "x-content-sha256": payload_hash, "x-date": xdate}
     signed = ";".join(sorted(headers))
     ch = "".join(f"{k}:{headers[k].strip()}\n" for k in sorted(headers))
     canonical = f"POST\n/\n{cq}\n{ch}\n{signed}\n{payload_hash}"
-    scope = f"{datestamp}/cn-beijing/ark/request"
+    scope = f"{datestamp}/cn-beijing/{service}/request"
     sts = f"HMAC-SHA256\n{xdate}\n{scope}\n{hashlib.sha256(canonical.encode()).hexdigest()}"
 
     def _h(key, msg):
@@ -291,11 +292,11 @@ def _volc_sign_req(ak, sk, action="GetAFPUsage", payload=None):
             msg = msg.encode()
         return hmac.new(key, msg, hashlib.sha256).digest()
 
-    kd = _h(sk, datestamp); kr = _h(kd, "cn-beijing"); ks = _h(kr, "ark"); kk = _h(ks, "request")
+    kd = _h(sk, datestamp); kr = _h(kd, "cn-beijing"); ks = _h(kr, service); kk = _h(ks, "request")
     sig = hmac.new(kk, sts.encode(), hashlib.sha256).hexdigest()
     auth = f"HMAC-SHA256 Credential={ak}/{scope}, SignedHeaders={signed}, Signature={sig}"
     req = urllib.request.Request(
-        f"https://{_VOLC_HOST}/?{cq}", data=body.encode(), method="POST",
+        f"https://{host}/?{cq}", data=body.encode(), method="POST",
         headers={"Content-Type": "application/json", "X-Date": xdate,
                  "X-Content-Sha256": payload_hash, "Authorization": auth,
                  "User-Agent": "model-monitor/1.0"})
@@ -481,6 +482,41 @@ def query_volc_codingplan(ak, sk):
         )
         return merged
     return aksk or fb
+
+# --------------------------------------------------------------------------
+# 适配器 4b: 火山引擎「按量付费」账户余额(Billing OpenAPI QueryBalanceAcct)
+# --------------------------------------------------------------------------
+def query_volc_balance_aksk(ak, sk):
+    """账户余额: 可用 / 现金 / 信用额度 / 欠费 / 冻结。需要 billing:QueryBalanceAcct 权限。"""
+    if not (ak and sk):
+        return {"ok": False, "needs_setup": "未配置火山 AK/SK（写入 .creds/volc.env）"}
+    try:
+        req = _volc_sign_req(ak, sk, action="QueryBalanceAcct",
+                             host="billing.volcengineapi.com",
+                             service="billing", version="2022-01-01")
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read().decode("utf-8"))
+        res = body.get("Result") or {}
+        return {"ok": True,
+                "available": _to_num(res.get("AvailableBalance")),
+                "cash": _to_num(res.get("CashBalance")),
+                "credit_limit": _to_num(res.get("CreditLimit")),
+                "arrears": _to_num(res.get("ArrearsBalance")),
+                "frozen": _to_num(res.get("FreezeAmount")),
+                "currency": res.get("Currency") or "CNY"}
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8")).get("ResponseMetadata", {}).get("Error", {})
+            code = err.get("Code") or ""
+            msg = err.get("Message") or ""
+        except Exception:
+            code, msg = "", str(e)
+        if "AccessDenied" in code or "NotAuthorized" in code or "Unauthorized" in code:
+            return {"ok": False, "needs_permission": True,
+                    "error": f"火山 AK/SK 缺 billing:QueryBalanceAcct 权限({msg[:90]})"}
+        return {"ok": False, "error": f"HTTP {e.code}: {(code or msg)[:120]}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
 
 # --------------------------------------------------------------------------
 # 适配器 5: MiniMax Coding Plan 配额(cn / io 双域名, Bearer key)
@@ -963,6 +999,11 @@ def collect_status():
                     r["coding"] = query_volc_codingplan(ak, sk)
                 except Exception as e:
                     r["coding"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
+                # 按量付费账户余额（Billing OpenAPI，与套餐额度互不影响）
+                try:
+                    r["balance"] = query_volc_balance_aksk(ak, sk)
+                except Exception as e:
+                    r["balance"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
                 rec["auto"] = r
                 rec["auth_kind"] = "AK/SK" if (ak and sk) else "SSO"
                 rec["key_present"] = bool(key)
@@ -1055,6 +1096,9 @@ def append_history(data):
                     row["volc_weekly"] = round(float(x["pct"]), 1); got = True
                 elif x.get("label") == "monthly" and x.get("pct") is not None:
                     row["volc_monthly"] = round(float(x["pct"]), 1); got = True
+            vbal = a.get("balance") or {}
+            if vbal.get("ok") and vbal.get("available") is not None:
+                row["volc_bal"] = round(float(vbal["available"]), 2); got = True
     if got:
         global _history
         load_history()

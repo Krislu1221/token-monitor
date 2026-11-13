@@ -233,6 +233,20 @@ function render(data,hist){
       }else if(a.needs_login){pillCls="dot err";hero=`<span class="big r">需重登</span>`;rows=`<div class="errbox">${esc(a.error||"SSO 失效")}</div>`;}
       else if(a.needs_permission){pillCls="dot err";hero=`<span class="big r">无权限</span>`;rows=`<div class="errbox">${esc(a.error||"")}</div>`;}
       else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+      // 按量付费余额（Billing OpenAPI）—— 与套餐额度并列，套餐状态不影响它
+      const vb=a.balance;
+      if(vb){
+        rows+=`<div class="row" style="margin-top:10px"><span class="lbl" style="font-weight:600">按量付费余额</span>`+
+          (vb.ok&&vb.available!=null
+            ? `<span class="num ${balClass(vb.available)}">¥${fmt(vb.available)}</span></div>
+               <div class="row"><span class="lbl">现金 / 信用额度</span><span class="num dim">¥${fmt(vb.cash)} / ¥${fmt(vb.credit_limit)}</span></div>
+               <div class="row"><span class="lbl">冻结 / 欠费</span><span class="num dim">¥${fmt(vb.frozen)} / ¥${fmt(vb.arrears)}</span></div>`
+            : vb.needs_permission
+              ? `<span class="num err">缺 billing 权限</span></div>`
+              : vb.needs_setup
+                ? `<span class="num dim">未配 AK/SK</span></div>`
+                : `<span class="num dim">${esc(String(vb.error||"—").slice(0,50))}</span></div>`);
+      }
     }
     else if(pid==="minimax"){
       const lblShort=l=>({weekly:"w",monthly:"m",session:"5h",daily:"d","5h":"5h"}[l]||l);
