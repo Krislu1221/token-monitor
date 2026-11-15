@@ -217,7 +217,10 @@ function render(data,hist){
         pillCls="dot "+(a.periods&&a.periods.length?"ok":"dim");
         const wk=(a.periods||[]).find(x=>x.label==="weekly");
         hero=`<span class="big ${wk?pctClass(wk.pct):""}">${wk?wk.pct.toFixed(0)+"%":""}</span><span class="unit">AP 周配额</span>`;
-        rows=`<div class="row"><span class="lbl" style="font-weight:600">Agent Plan${a.tier?` (${esc(a.tier)})`:""}</span><span class="num dim">${a.via==="aksk"?"AK/SK":"SSO"}</span></div>`
+        const acc=a.account||{};
+        const accTag=acc.dedicated?`<span style="font-size:10px;font-weight:700;color:#fff;background:var(--vc);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:1px">独立账户</span>`:"";
+        const accLabel=acc.sso?"SSO":`AK/SK${acc.ak_tail?` …${esc(acc.ak_tail)}`:""}`;
+        rows=`<div class="row"><span class="lbl" style="font-weight:600">Agent Plan${a.tier?` (${esc(a.tier)})`:""}${accTag}</span><span class="num dim">${accLabel}</span></div>`
              +periodRows(a.periods,0);
         const c=a.coding;
         if(c){
@@ -233,6 +236,10 @@ function render(data,hist){
       }else if(a.needs_login){pillCls="dot err";hero=`<span class="big r">需重登</span>`;rows=`<div class="errbox">${esc(a.error||"SSO 失效")}</div>`;}
       else if(a.needs_permission){pillCls="dot err";hero=`<span class="big r">无权限</span>`;rows=`<div class="errbox">${esc(a.error||"")}</div>`;}
       else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+      const accx=a.account||{};
+      if(accx.ak_tail&&!(a.ok&&a.subscribed)){
+        rows+=`<div class="row" style="margin-top:8px"><span class="lbl">AP 户口</span><span class="num dim">${accx.dedicated?"独立账户":"共用账户"} …${esc(accx.ak_tail)}</span></div>`;
+      }
       // 按量付费余额（Billing OpenAPI）—— 与套餐额度并列，套餐状态不影响它
       const vb=a.balance;
       if(vb){

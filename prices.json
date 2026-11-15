@@ -1,0 +1,95 @@
+{
+ "_comment": "调用明细折算价格表。单位: 元/百万token。afp_coef=方舟Agent Plan抵扣系数, afp_yuan=每AFP元, cp_per_call=Coding Plan每元/次。payg 按量: in_offpeak/in_peak/cache_offpeak/cache_peak/out_offpeak/out_peak (DS) 或单一 in/cache/out (GLM促销一口价)。缺价模型在面板显示「未配置」。",
+ "afp_yuan": 0.002,
+ "cp_per_call": 0.00222,
+ "afp_coef": {
+  "glm-5.3-flash": 0.5,
+  "glm-5-3-flash-260828": 0.5,
+  "deepseek-v4.1-flash": 0.875,
+  "_default": 1
+ },
+ "payg": {
+  "deepseek-v4.1-flash": {
+   "mode": "peak",
+   "in_offpeak": 1.0,
+   "in_peak": 2.0,
+   "cache_offpeak": 0.02,
+   "cache_peak": 0.04,
+   "out_offpeak": 4.0,
+   "out_peak": 8.0
+  },
+  "deepseek-flash": {
+   "mode": "peak",
+   "in_offpeak": 1.0,
+   "in_peak": 2.0,
+   "cache_offpeak": 0.02,
+   "cache_peak": 0.04,
+   "out_offpeak": 4.0,
+   "out_peak": 8.0
+  },
+  "glm-5.3-flash": {
+   "mode": "flat",
+   "in": 0.4,
+   "cache": 0.115,
+   "out": 1.4
+  },
+  "glm-5-3-flash-260828": {
+   "mode": "flat",
+   "in": 0.4,
+   "cache": 0.115,
+   "out": 1.4
+  },
+  "MiniMax-M3.1-Flash-Preview": {
+   "mode": "flat",
+   "in": 0.7,
+   "cache": 0.07,
+   "out": 1.4
+  },
+  "ark-code-latest": {
+   "mode": "flat",
+   "in": 0.8,
+   "cache": 0.23,
+   "out": 2.8
+  }
+ },
+ "peak_hours": {
+  "days": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "ranges": [
+   [
+    9,
+    12
+   ],
+   [
+    14,
+    18
+   ]
+  ]
+ },
+ "provider_labels": {
+  "_comment": "provider 字段 → 真实 API 身份。custom 等含糊通道在这里写清楚，面板全部位置生效。",
+  "volcengine_agent_plan": "火山 Agent Plan",
+  "volcengine_coding_plan": "火山 Coding Plan",
+  "volcengine_ark": "火山按量",
+  "deepseek": "DeepSeek 原厂",
+  "zhipu": "智谱官方",
+  "minimax": "MiniMax 官方",
+  "custom": "火山 Coding Plan (custom 配置)",
+  "ljai": "LJAI API",
+  "hermes:ljai": "Hermes · LJAI API",
+  "hermes:deepseek": "Hermes · DS 原厂",
+  "hermes:volcengine_coding_plan": "Hermes · 火山CP",
+  "hermes:volcengine_ark": "Hermes · 火山按量",
+  "hermes:volcengine_agent_plan": "Hermes · 火山AP",
+  "hermes:minimax": "Hermes · MiniMax",
+  "hermes:zhipu": "Hermes · 智谱",
+  "hermes:vision_aux": "Hermes · vision辅助(主模型代跑)",
+  "hermes:aux": "Hermes · 辅助调用(未记通道)",
+  "hermes:other:unknown": "Hermes · 未知通道(元数据缺失)"
+ }
+}

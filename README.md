@@ -134,6 +134,25 @@ MiMo 控制台 API 在 2026-11 起要求请求签名（只带 cookie 会返回 `
 
 没有权限时面板会明确显示「缺 billing 权限」，不影响套餐额度那两行。
 
+### 火山：Agent Plan 可以单独用另一个账户
+
+火山的三路取数各自独立，**换 Agent Plan 账户不需要动 Coding Plan 和按量付费余额**：
+
+| 路 | 用哪套凭据 | 换账户命令 |
+|---|---|---|
+| Agent Plan 额度 | `volc_ap_ak` / `volc_ap_sk`（留空则回落共用） | `volc_account.py set-ap <AK> <SK>` |
+| Coding Plan 额度 | `volc_ak` / `volc_sk` | `volc_account.py set-main <AK> <SK>` |
+| 按量付费余额 | `volc_ak` / `volc_sk` | 同上 |
+
+```bash
+.venv/bin/python volc_account.py show      # 看当前是两个户口还是同一个
+.venv/bin/python volc_account.py set-ap    AKLT新账号AK  SK新账号密钥  --key ark-新APKey
+.venv/bin/python volc_account.py test      # 三路立刻实测
+.venv/bin/python volc_account.py reset-ap  # 撤掉 AP 专用凭据，回落共用
+```
+
+切到独立账户后，面板的 Agent Plan 行会显示「独立账户」徽章 + AK 尾 4 位（如 `AK/SK …kMGM`），一眼能看出这块额度来自哪个账号。改完等下一轮轮询（≤5 分钟）或点「立即刷新」即可，不需要重启服务。
+
 
 ## 打包成 macOS App（可选）
 

@@ -40,6 +40,223 @@ HTTP_TIMEOUT = 12
 PORT = int(os.environ.get("PORT", "8317"))
 
 # --------------------------------------------------------------------------
+# 调用明细层: 读 nanobot llm_usage.sqlite3, 折算成本
+# --------------------------------------------------------------------------
+import sqlite3
+
+LLM_USAGE_DB = os.environ.get("LLM_USAGE_DB") or os.path.expanduser("~/.nanobot/llm_usage.sqlite3")
+PRICES_FILE = os.path.join(BASE_DIR, "prices.json")
+
+def load_prices():
+    try:
+        with open(PRICES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"afp_yuan": 0.002, "cp_per_call": 0.00222, "afp_coef": {}, "payg": {}, "peak_hours": {}}
+
+def save_prices(p):
+    with open(PRICES_FILE, "w", encoding="utf-8") as f:
+        json.dump(p, f, ensure_ascii=False, indent=2)
+    return p
+
+def _is_peak(ts_ms, pk):
+    d = datetime.datetime.fromtimestamp(ts_ms / 1000 + 8 * 3600, datetime.timezone.utc)
+    if d.weekday() not in pk.get("days", []):
+        return False
+    h = d.hour
+    return any(a <= h < b for a, b in pk.get("ranges", []))
+
+def _meter(provider):
+    if "agent_plan" in provider:
+        return "afp"
+    if "coding_plan" in provider:
+        return "cp"
+    return "payg"
+
+def _row_cost(pr, provider, model, ts_ms, inp, outp, cache):
+    """返回 (yuan, afp, calls_basis) —— 按通道计价模式折算。"""
+    meter = _meter(provider)
+    if meter == "afp":
+        coef = pr.get("afp_coef", {}).get(model, pr.get("afp_coef", {}).get("_default", 1))
+        afp = (inp * coef + outp * coef) / 10000.0
+        return afp * pr.get("afp_yuan", 0.002), afp, 0
+    if meter == "cp":
+        return pr.get("cp_per_call", 0.00222), 0.0, 1
+    p = pr.get("payg", {}).get(model)
+    if not p:
+        return None, 0.0, 0
+    if p.get("mode") == "peak":
+        peak = _is_peak(ts_ms, pr.get("peak_hours", {}))
+        ki = p["in_peak" if peak else "in_offpeak"]
+        kc = p["cache_peak" if peak else "cache_offpeak"]
+        ko = p["out_peak" if peak else "out_offpeak"]
+        peak_tag = 1 if peak else 0
+    else:
+        ki, kc, ko, peak_tag = p["in"], p["cache"], p["out"], 0
+    hit = min(max(cache, 0), inp) if inp > 0 else 0.0
+    uncached = max(inp - hit, 0)
+    yuan = (uncached * ki + hit * kc + outp * ko) / 1e6
+    return yuan, 0.0, peak_tag
+
+HERMES_STATE_DB = os.environ.get("HERMES_STATE_DB") or os.path.expanduser("~/.hermes/state.db")
+
+def _chan_from_base(base):
+    b = (base or "").lower()
+    if "ljaicompute" in b: return "ljai"
+    if "api.deepseek.com" in b: return "deepseek"
+    if "ark.cn-beijing.volces.com/api/coding" in b: return "volcengine_coding_plan"
+    if "ark.cn-beijing.volces.com/api/plan" in b: return "volcengine_agent_plan"
+    if "ark.cn-beijing.volces.com" in b: return "volcengine_ark"
+    if "api.minimax" in b: return "minimax"
+    if "bigmodel.cn" in b: return "zhipu"
+    if "xiaomimimo" in b: return "xiaomiMimo"
+    return "other:" + (base or "unknown")[:40]
+
+def query_hermes_combos(days=7):
+    """Hermes 侧 session_model_usage → combo 行（agent=hermes）。session 级聚合，无逐笔明细。"""
+    pr = load_prices()
+    seen = {}
+    try:
+        con = sqlite3.connect(f"file:{HERMES_STATE_DB}?mode=ro", uri=True)
+        cur = con.cursor()
+        where, args = "", []
+        if days and days > 0:
+            where = "WHERE last_seen > (strftime('%s','now') - ?)"
+            args = [int(days) * 86400]
+        rows = cur.execute(
+            f"""SELECT model, billing_base_url, COUNT(*), SUM(api_call_count), SUM(input_tokens),
+                       SUM(output_tokens), SUM(cache_read_tokens), MAX(last_seen), task
+                FROM session_model_usage {where}
+                GROUP BY model, billing_base_url, task ORDER BY SUM(input_tokens) DESC""", args).fetchall()
+        con.close()
+    except Exception:
+        return []
+    for mdl, base, nsess, ncalls, ti, to, tc, last, task in rows:
+        ti, to, tc = ti or 0, to or 0, tc or 0
+        ncalls = ncalls or 0
+        chan = _chan_from_base(base)
+        if (base or "").strip() == "" and chan == "other:unknown":
+            # hermes 辅助调用 (vision 等 auxiliary) 未记录 billing 元数据, 按用途归位
+            chan = "vision_aux" if "vision" in (task or "") else "aux"
+        meter = _meter(chan)
+        key = (f"hermes:{chan}", mdl)
+        if key in seen:
+            agg = seen[key]
+            agg["calls"] += ncalls; agg["input"] += ti; agg["output"] += to; agg["cache"] += tc
+            agg["sessions"] += nsess
+        else:
+            seen[key] = agg = {"provider": key[0], "model": mdl, "meter": meter, "calls": ncalls,
+                               "input": ti, "output": to, "cache": tc, "sessions": nsess,
+                               "hit": 0, "avg_in": 0, "yuan": None, "unit": None,
+                               "basis": "按量", "agent": "hermes"}
+        full_in = ti + tc  # hermes 口径: input 不含 cache_read, AFP/按量折算要用总输入
+        if meter == "afp":
+            coef = pr.get("afp_coef", {}).get(mdl, pr.get("afp_coef", {}).get("_default", 1))
+            afp = (full_in * coef + to * coef) / 10000.0
+            yuan = afp * pr.get("afp_yuan", 0.002)
+            agg["basis"] = "AFP×0.002元"
+        elif meter == "cp":
+            yuan = ncalls * pr.get("cp_per_call", 0.00222)
+            agg["basis"] = "按次"
+            agg["unit"] = None
+        else:
+            p = pr.get("payg", {}).get(mdl)
+            if p and full_in:
+                ki = p.get("in", p.get("in_offpeak", 0)); kc = p.get("cache", p.get("cache_offpeak", 0)); ko = p.get("out", p.get("out_offpeak", 0))
+                yuan = (ti * ki + tc * kc + to * ko) / 1e6  # ti=未命中新输入, tc=缓存命中
+            else:
+                yuan = None
+                agg["unit"] = None
+            agg["basis"] = "按量"
+        agg["yuan"] = round((agg["yuan"] or 0) + yuan, 2) if yuan is not None else agg["yuan"]
+        agg["hit"] = min(100.0, round(100.0 * agg["cache"] / max(agg["input"] + agg["cache"], 1), 1))
+        agg["avg_in"] = round(agg["input"] / agg["calls"]) if agg["calls"] else 0
+    for agg in seen.values():
+        total_in = agg["input"] + agg["cache"]
+        if agg["meter"] == "cp":
+            agg["unit"] = None
+        elif agg["yuan"] is not None and total_in:
+            agg["unit"] = round(agg["yuan"] / total_in * 1e6, 3)
+        else:
+            agg["unit"] = None
+    return list(seen.values())
+
+def query_calls(days=7, model="", channel="", source="", limit=8000):
+    pr = load_prices()
+    con = sqlite3.connect(f"file:{LLM_USAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = con.cursor()
+        where = ["input_tokens > 0", "finish_reason != 'error'"]
+        args = []
+        if days and days > 0:
+            where.append("started_at_ms > (strftime('%s','now') - ?) * 1000")
+            args.append(int(days) * 86400)
+        if model:
+            where.append("model = ?"); args.append(model)
+        if channel:
+            where.append("provider = ?"); args.append(channel)
+        if source:
+            where.append("source = ?"); args.append(source)
+        w = " AND ".join(where)
+        rows = cur.execute(
+            f"SELECT started_at_ms, duration_ms, provider, model, source, input_tokens, output_tokens, cache_read_tokens FROM llm_calls WHERE {w} ORDER BY started_at_ms DESC LIMIT ?",
+            args + [limit]).fetchall()
+        combos = cur.execute(
+            f"""SELECT provider, model, COUNT(*), SUM(input_tokens), SUM(output_tokens),
+                       SUM(cache_read_tokens), SUM(duration_ms)
+                FROM llm_calls WHERE {w} GROUP BY provider, model ORDER BY SUM(input_tokens) DESC""",
+            args).fetchall()
+        byday = cur.execute(
+            f"""SELECT date(started_at_ms/1000,'unixepoch','+8 hours') d, COUNT(*), SUM(input_tokens),
+                       SUM(output_tokens), SUM(cache_read_tokens)
+                FROM llm_calls WHERE {w} GROUP BY d ORDER BY d""",
+            args).fetchall()
+    finally:
+        con.close()
+    combos_out = []
+    for prov, mdl, n, ti, to, tc, tdur in combos:
+        meter = _meter(prov)
+        full_in = ti + tc  # hermes 口径: input 不含 cache_read, AFP/按量折算要用总输入
+        if meter == "afp":
+            coef = pr.get("afp_coef", {}).get(mdl, pr.get("afp_coef", {}).get("_default", 1))
+            afp = (full_in * coef + to * coef) / 10000.0
+            yuan = afp * pr.get("afp_yuan", 0.002)
+            unit = yuan / ti * 1e6 if ti else 0
+            basis = f"AFP×{pr.get('afp_yuan', 0.002)}元"
+        elif meter == "cp":
+            yuan = n * pr.get("cp_per_call", 0.00222)
+            unit = 0
+            basis = "按次"
+        else:
+            yuan = sum(_row_cost(pr, prov, mdl, r[0], r[5], r[6], r[7])[0] or 0 for r in rows if r[2] == prov and r[3] == mdl)
+            unit = yuan / ti * 1e6 if ti else 0
+            basis = "按量"
+        hit = round(100.0 * tc / ti, 1) if ti else 0
+        combos_out.append({"provider": prov, "model": mdl, "meter": meter, "calls": n,
+                           "input": ti, "output": to, "cache": tc, "hit": hit,
+                           "avg_in": round(ti / n) if n else 0,
+                           "yuan": round(yuan, 2), "unit": round(unit, 3), "basis": basis})
+    day_out = []
+    for d, n, ti, to, tc in byday:
+        day_out.append({"date": d, "calls": n, "input": ti, "output": to,
+                        "hit": round(100.0 * tc / ti, 1) if ti else 0})
+    for hc in query_hermes_combos(days if days else 0):
+        if channel and hc["provider"] != channel and not hc["provider"].endswith(":" + channel):
+            continue
+        if model and hc["model"] != model:
+            continue
+        if source and source != "user":
+            continue
+        combos_out.append(hc)
+    totals_y = sum(c["yuan"] for c in combos_out if c.get("yuan") is not None)
+    return {"rows": [[r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]] for r in rows],
+            "combos": combos_out, "byDay": day_out,
+            "totals": {"calls": sum(c["calls"] for c in combos_out),
+                       "input": sum(c["input"] for c in combos_out),
+                       "output": sum(c["output"] for c in combos_out),
+                       "yuan": round(totals_y, 2), "hermes": sum(1 for c in combos_out if c.get("agent")=="hermes")}}
+
+# --------------------------------------------------------------------------
 # 密钥装载: 从 nanobot config 读取, 允许环境变量覆盖
 # --------------------------------------------------------------------------
 def load_keys():
@@ -51,6 +268,7 @@ def load_keys():
                 local = json.load(f) or {}
             for k in ("deepseek", "zhipu", "minimax", "qwen",
                       "volc_agent_plan", "volc_ak", "volc_sk",
+                      "volc_ap_key", "volc_ap_ak", "volc_ap_sk",
                       "aliyun_ak", "aliyun_sk"):
                 if local.get(k):
                     cfg[k] = local[k]
@@ -99,6 +317,9 @@ def load_keys():
     # 火山 AK/SK(长期方案; 缺省时回落 arkcli SSO)
     cfg.setdefault("volc_ak", os.environ.get("VOLC_AK_ID"))
     cfg.setdefault("volc_sk", os.environ.get("VOLC_AK_SECRET"))
+    # 火山 Agent Plan 可单独用另一套 AK/SK(换账户时只切 AP, 不动 Coding Plan/余额)
+    cfg.setdefault("volc_ap_ak", os.environ.get("VOLC_AP_AK_ID"))
+    cfg.setdefault("volc_ap_sk", os.environ.get("VOLC_AP_AK_SECRET"))
     volc_env = os.path.join(BASE_DIR, ".creds", "volc.env")
     if os.path.exists(volc_env):
         try:
@@ -109,9 +330,28 @@ def load_keys():
                         cfg["volc_ak"] = line.split("=", 1)[1].strip().strip("\"'")
                     elif line.startswith("VOLC_AK_SECRET="):
                         cfg["volc_sk"] = line.split("=", 1)[1].strip().strip("\"'")
+                    elif line.startswith("VOLC_AP_AK_ID="):
+                        cfg["volc_ap_ak"] = line.split("=", 1)[1].strip().strip("\"'")
+                    elif line.startswith("VOLC_AP_AK_SECRET="):
+                        cfg["volc_ap_sk"] = line.split("=", 1)[1].strip().strip("\"'")
         except Exception:
             pass
+    # 专用 AP 凭据为空时回落共用凭据
+    if not cfg.get("volc_ap_ak"):
+        cfg["volc_ap_ak"] = cfg.get("volc_ak")
+    if not cfg.get("volc_ap_sk"):
+        cfg["volc_ap_sk"] = cfg.get("volc_sk")
+    # AP 专用 API Key(仅展示用; 取用量靠 AK/SK)
+    if not cfg.get("volc_ap_key"):
+        cfg["volc_ap_key"] = cfg.get("volc_agent_plan")
     return cfg
+
+def volc_ak_tail(ak):
+    """AK 尾部 4 位, 用于在面板上区分是哪套凭据"""
+    if not ak:
+        return None
+    s = str(ak)
+    return s[-4:] if len(s) >= 8 else "***"
 
 def mask(v):
     if not v:
@@ -990,10 +1230,16 @@ def collect_status():
                 rec["auth_kind"] = "登录态"
             elif m["id"] == "volc":
                 ak, sk = keys.get("volc_ak"), keys.get("volc_sk")
-                if ak and sk:
-                    r = query_volc_agentplan_aksk(ak, sk)
+                # Agent Plan 可用独立账户凭据（换 AP 账户时只切 AP）
+                ap_ak, ap_sk = keys.get("volc_ap_ak"), keys.get("volc_ap_sk")
+                ap_dedicated = bool(ap_ak and ap_sk and (ap_ak != ak or ap_sk != sk))
+                if ap_ak and ap_sk:
+                    r = query_volc_agentplan_aksk(ap_ak, ap_sk)
                 else:
                     r = query_volc_agentplan()  # SSO 兜底
+                r["account"] = {"ak_tail": volc_ak_tail(ap_ak),
+                                "dedicated": ap_dedicated,
+                                "sso": not bool(ap_ak and ap_sk)}
                 # Coding Plan：与 Agent Plan 并列展示（AK/SK 优先，arkcli 兜底）
                 try:
                     r["coding"] = query_volc_codingplan(ak, sk)
@@ -1005,8 +1251,13 @@ def collect_status():
                 except Exception as e:
                     r["balance"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
                 rec["auto"] = r
-                rec["auth_kind"] = "AK/SK" if (ak and sk) else "SSO"
-                rec["key_present"] = bool(key)
+                if ap_dedicated:
+                    rec["auth_kind"] = f"AP 独立 AK(…{volc_ak_tail(ap_ak)})"
+                elif ak and sk:
+                    rec["auth_kind"] = "AK/SK"
+                else:
+                    rec["auth_kind"] = "SSO"
+                rec["key_present"] = bool(keys.get("volc_ap_key"))
             elif m["id"] == "minimax":
                 ck_mm, _gid, _host = _minimax_creds()
                 if ck_mm:
@@ -1150,10 +1401,37 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             with open(os.path.join(BASE_DIR, "dashboard.html"), "rb") as f:
                 self._send(200, f.read(), "text/html")
+        elif self.path in ("/calls", "/calls.html"):
+            with open(os.path.join(BASE_DIR, "calls.html"), "rb") as f:
+                self._send(200, f.read(), "text/html")
+        elif self.path.startswith("/api/calls"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                data = query_calls(
+                    days=int(q.get("days", ["7"])[0]),
+                    model=q.get("model", [""])[0],
+                    channel=q.get("channel", [""])[0],
+                    source=q.get("source", [""])[0])
+                self._send(200, json.dumps(data, ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}))
+        elif self.path == "/api/prices":
+            self._send(200, json.dumps(load_prices(), ensure_ascii=False))
         elif self.path == "/api/status":
             self._send(200, json.dumps(get_status(), ensure_ascii=False))
         elif self.path == "/api/poll":
             self._send(200, json.dumps(get_status(force=True), ensure_ascii=False))
+        elif self.path in ("/convo", "/convo.html"):
+            with open(os.path.join(BASE_DIR, "convo.html"), "rb") as f:
+                self._send(200, f.read(), "text/html")
+        elif self.path.startswith("/api/convo-analysis"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                self._send(200, json.dumps(analyze_conversations(window_h=int(q.get("hours", ["24"])[0])), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}))
         elif self.path == "/api/history":
             load_history()
             tail = _history[-120:]
@@ -1170,8 +1448,225 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "manual": rec}))
             except Exception as e:
                 self._send(400, json.dumps({"error": str(e)}))
+        elif self.path == "/api/prices":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                save_prices(data)
+                self._send(200, json.dumps({"ok": True}))
+            except Exception as e:
+                self._send(400, json.dumps({"error": str(e)}))
         else:
             self._send(404, json.dumps({"error": "not found"}))
+
+# --------------------------------------------------------------------------
+# 对话体检层: 扫描近24h多Agent会话, 事后分析上下文堆积与使用习惯
+# --------------------------------------------------------------------------
+import glob as _glob
+
+CONVO_WINDOW_H = 24
+NANOBOT_SESSIONS_GLOB = os.path.expanduser("~/.nanobot/sessions/*/sessions.sqlite3")
+HERMES_STATE_DB = os.path.expanduser("~/.hermes/state.db")
+OPENCLAW_INSTANCES = os.path.expanduser("~/.enhance-claw/instances/*")
+OPENCLAW_EXCLUDED = {"虾总", "虾软"}  # 2026-11-15 老板确认已停用
+
+def _tok_est(byte_len):
+    """粗估 token: 中文 UTF-8 ~3B/字, 英文 ~4B/tok, 取 2.5 折中"""
+    return int(byte_len / 2.5)
+
+def _scan_nanobot_sessions(cutoff_ts):
+    out = []
+    for db in _glob.glob(NANOBOT_SESSIONS_GLOB):
+        try:
+            c = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        except Exception:
+            continue
+        try:
+            rows = c.execute("select key, title, visible_updated_at, preview from sessions").fetchall()
+        except Exception:
+            c.close(); continue
+        for key, title, vua, preview in rows:
+            try:
+                msgs = c.execute("select record from messages where session_key=? order by position", (key,)).fetchall()
+            except Exception:
+                continue
+            if not msgs: continue
+            first_ts, last_ts, n_bytes, n_tool = None, None, 0, 0
+            for (rec,) in msgs:
+                b = rec.encode("utf8") if isinstance(rec, str) else (rec or b"")
+                n_bytes += len(b)
+                try:
+                    d = json.loads(rec if isinstance(rec, str) else rec.decode("utf8"))
+                except Exception:
+                    continue
+                ts = d.get("timestamp")
+                try: ts = float(ts)
+                except Exception: ts = None
+                if ts:
+                    if first_ts is None: first_ts = ts
+                    last_ts = ts
+                if d.get("tool_calls"): n_tool += 1
+            anchor = last_ts or first_ts
+            if not anchor or anchor < cutoff_ts: continue
+            out.append({
+                "agent": "猫王/nanobot",
+                "session_id": hashlib.md5(str(key).encode()).hexdigest()[:10],
+                "title": title or (str(preview or "")[:60] or "(无标题)"),
+                "messages": len(msgs),
+                "transcript_bytes": n_bytes,
+                "est_ctx_tokens": _tok_est(n_bytes),
+                "tool_calls": n_tool,
+                "first_ts": first_ts, "last_ts": last_ts,
+            })
+        c.close()
+    return out
+
+def _scan_hermes_sessions(cutoff_ts):
+    if not os.path.exists(HERMES_STATE_DB): return []
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % HERMES_STATE_DB, uri=True)
+    except Exception:
+        return []
+    out = []
+    try:
+        rows = c.execute(
+            "select id, title, source, message_count, tool_call_count, input_tokens, "
+            "cache_read_tokens, api_call_count, started_at, last_activity_at "
+            "from sessions where coalesce(last_activity_at, started_at, 0) >= ?", (cutoff_ts,)).fetchall()
+        for (sid, title, source, mc, tc, inp, cache, calls, st, la) in rows:
+            # 当前上下文体量: messages 表活跃内容字节数估算 (input+cache 是全生命周期累计, 不能当上下文)
+            n_bytes, n_msgs = 0, 0
+            try:
+                for (c1,) in c.execute("select content from messages where session_id=?", (sid,)):
+                    if c1:
+                        n_bytes += len(c1.encode("utf8")) if isinstance(c1, str) else len(c1)
+                        n_msgs += 1
+            except Exception:
+                pass
+            est = _tok_est(n_bytes) if n_bytes else 0
+            out.append({
+                "agent": "Hermes·%s" % (source or "?"),
+                "session_id": str(sid)[-14:],
+                "title": title or "(无标题)",
+                "messages": n_msgs or mc or 0,
+                "transcript_bytes": n_bytes or None,
+                "est_ctx_tokens": est,
+                "tool_calls": tc or 0,
+                "api_calls": calls or 0,
+                "first_ts": st, "last_ts": la,
+                "cum_input_cache": (inp or 0) + (cache or 0),
+            })
+    except Exception:
+        pass
+    c.close()
+    return out
+
+def _scan_openclaw_sessions(cutoff_ts):
+    out = []
+    for inst_dir in sorted(_glob.glob(OPENCLAW_INSTANCES)):
+        name = os.path.basename(inst_dir)
+        if name.startswith((".",)) or "backup" in name or "_old" in name: continue
+        if name in OPENCLAW_EXCLUDED: continue  # 已停用实例, 轨迹是历史残留
+        sdir = os.path.join(inst_dir, "data", "agents", "*", "sessions")
+        for path in _glob.glob(sdir + "/*.jsonl"):
+            try:
+                st = os.stat(path)
+            except Exception:
+                continue
+            if st.st_mtime < cutoff_ts: continue
+            n_bytes = st.st_size
+            n_msgs = 0
+            try:
+                with open(path, "rb") as f:
+                    for _ in f: n_msgs += 1
+            except Exception:
+                pass
+            out.append({
+                "agent": name,
+                "session_id": os.path.basename(path)[:18],
+                "title": "(jsonl 轨迹)",
+                "messages": n_msgs,
+                "transcript_bytes": n_bytes,
+                "est_ctx_tokens": _tok_est(n_bytes),
+                "tool_calls": None,
+                "first_ts": None, "last_ts": st.st_mtime,
+            })
+    return out
+
+def analyze_conversations(window_h=CONVO_WINDOW_H):
+    now = time.time()
+    cutoff = now - window_h * 3600
+    sessions = _scan_nanobot_sessions(cutoff) + _scan_hermes_sessions(cutoff) + _scan_openclaw_sessions(cutoff)
+    # 按上下文体量分级
+    for s in sessions:
+        t = s.get("est_ctx_tokens") or 0
+        flags, advice = [], []
+        lvl = "ok"
+        if t >= 500000:
+            lvl = "critical"; flags.append("上下文体量 ~%s tok" % _fmt_tok(t))
+            advice.append("强烈建议立即 /new 开新会话，旧话题有价值的结论先让 agent 落盘到文件")
+        elif t >= 120000:
+            lvl = "warn"; flags.append("上下文体量 ~%s tok" % _fmt_tok(t))
+            advice.append("建议 /compact 压缩，或 /new 换新会话；长会话每轮都在重读全部历史，费钱又变慢")
+        elif t >= 60000:
+            lvl = "watch"; flags.append("上下文体量 ~%s tok" % _fmt_tok(t))
+            advice.append("体量偏高，若话题已收尾建议 /new；继续聊可接受")
+        mc = s.get("messages") or 0
+        if mc >= 300:
+            flags.append("%d 条消息" % mc)
+            advice.append("单会话消息过多，建议按话题拆分会话")
+        span_h = None
+        if s.get("first_ts") and s.get("last_ts"):
+            span_h = round((s["last_ts"] - s["first_ts"]) / 3600, 1)
+        if span_h and span_h >= 12:
+            flags.append("跨 %.0f 小时" % span_h)
+            advice.append("会话存活超半天，多个话题混在一起，建议每个独立话题开新会话")
+        stale_h = round((now - (s.get("last_ts") or 0)) / 3600, 1)
+        if lvl in ("warn", "critical") and stale_h >= 12:
+            flags.append("已闲置 %.0f 小时" % stale_h)
+            advice.append("大体量会话已长期闲置，直接 /new 关闭即可")
+        tc = s.get("tool_calls")
+        if isinstance(tc, int) and mc and tc / max(mc, 1) > 1.5:
+            flags.append("工具调用密集 (≈%.1f 次/消息)" % (tc / mc))
+            advice.append("工具密集型任务建议独立会话执行，避免污染日常对话上下文")
+        s["level"] = lvl
+        s["flags"] = flags
+        s["span_h"] = span_h
+        s["stale_h"] = stale_h
+        s["advice"] = advice
+    order = {"critical": 0, "warn": 1, "watch": 2, "ok": 3}
+    sessions.sort(key=lambda s: (order.get(s["level"], 9), -(s.get("est_ctx_tokens") or 0)))
+    counts = {"critical": 0, "warn": 0, "watch": 0, "ok": 0}
+    for s in sessions: counts[s["level"]] = counts.get(s["level"], 0) + 1
+    by_agent = {}
+    for s in sessions:
+        a = by_agent.setdefault(s["agent"], {"sessions": 0, "messages": 0, "max_ctx": 0})
+        a["sessions"] += 1
+        a["messages"] += s.get("messages") or 0
+        a["max_ctx"] = max(a["max_ctx"], s.get("est_ctx_tokens") or 0)
+    habits = []
+    if counts["critical"]:
+        habits.append("有 %d 个体会话已超 50 万 tok 体量——这是 9 月「27 万 token 中毒会话」的同款模式，建议把『会话收尾即 /new』固化成习惯" % counts["critical"])
+    if counts["warn"]:
+        habits.append("%d 个会话在 12–50 万 tok 区间：长任务做完一个阶段就 /compact，换话题就 /new" % counts["warn"])
+    n_long = sum(1 for s in sessions if s.get("span_h") and s["span_h"] >= 12)
+    if n_long:
+        habits.append("%d 个会话跨半天以上仍在续——一个会话一个话题，能显著降低每轮 input token" % n_long)
+    if not habits:
+        habits.append("近 %d 小时会话体量整体健康，保持当前使用节奏" % window_h)
+    return {
+        "window_h": window_h,
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "counts": counts,
+        "total_sessions": len(sessions),
+        "by_agent": by_agent,
+        "habits": habits,
+        "sessions": sessions,
+    }
+
+def _fmt_tok(t):
+    if t >= 10000: return "%.0f万" % (t / 10000)
+    return str(t)
 
 def main():
     keys = load_keys()

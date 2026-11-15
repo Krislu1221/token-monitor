@@ -184,6 +184,8 @@ class ModelMonitorApp(rumps.App):
         self.updated_item = rumps.MenuItem("—")
         self.menu = menu_items + [
             rumps.MenuItem("打开面板 ↗", callback=self._open_panel),
+            rumps.MenuItem("调用明细 ↗", callback=self._open_calls),
+            rumps.MenuItem("对话体检 ↗", callback=self._open_convo),
             rumps.MenuItem("立即刷新", callback=self._refresh),
             self.updated_item,
             rumps.MenuItem("退出", callback=rumps.quit_application),
@@ -222,6 +224,12 @@ class ModelMonitorApp(rumps.App):
 
     def _open_panel(self, _):
         webbrowser.open(PANEL)
+
+    def _open_calls(self, _):
+        webbrowser.open(PANEL + "/calls")
+
+    def _open_convo(self, _):
+        webbrowser.open(PANEL + "/convo")
 
     def _refresh(self, _):
         try:

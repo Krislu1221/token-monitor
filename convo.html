@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对话体检 · Token Monitor</title>
+<style>
+  :root{
+    --bg:#0b0e14; --card:#141a26; --line:#1f2937;
+    --txt:#e8ecf4; --sub:#8b95a7; --dim:#5b6577;
+    --green:#22c55e; --orange:#f59e0b; --red:#ef4444; --blue:#3b82f6;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(1100px 500px at 85% -10%, rgba(59,130,246,.10), transparent 60%),var(--bg);
+    color:var(--txt);font-family:-apple-system,"PingFang SC",sans-serif;min-height:100vh;padding:28px 20px 60px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:4px}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:20px}
+  .topbar{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+  select,button{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:8px;
+    padding:6px 14px;font-size:13px;cursor:pointer}
+  button:hover{border-color:var(--blue)}
+  .counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+  .stat .num{font-size:24px;font-weight:700}
+  .stat .lab{font-size:12px;color:var(--sub);margin-top:2px}
+  .stat.red .num{color:var(--red)} .stat.orange .num{color:var(--orange)} .stat.green .num{color:var(--green)}
+  .habits{background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(139,92,246,.06));
+    border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px;margin-bottom:22px}
+  .habits h2{font-size:14px;color:var(--blue);margin-bottom:8px}
+  .habits li{font-size:13px;color:var(--txt);margin:6px 0 6px 18px;line-height:1.6}
+  .sess{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:14px 18px;margin-bottom:12px;border-left:4px solid var(--green)}
+  .sess.critical{border-left-color:var(--red)}
+  .sess.warn{border-left-color:var(--orange)}
+  .sess.watch{border-left-color:#eab308}
+  .sess .head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .sess .agent{font-size:12px;color:#fff;background:#273449;border-radius:6px;padding:2px 8px}
+  .sess .title{font-size:14px;font-weight:600}
+  .sess .tok{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+  .sess.critical .tok{color:var(--red)} .sess.warn .tok{color:var(--orange)} .sess.watch .tok{color:#eab308}
+  .sess .meta{font-size:12px;color:var(--sub);margin:6px 0;display:flex;gap:14px;flex-wrap:wrap}
+  .sess .flags span{display:inline-block;font-size:11px;color:var(--sub);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:2px 4px 2px 0}
+  .sess .advice{font-size:12.5px;color:#9db8dc;margin-top:6px;line-height:1.7}
+  .sess .advice::before{content:"→ 建议：";color:var(--blue);font-weight:600}
+  .empty{text-align:center;color:var(--dim);padding:60px 0;font-size:14px}
+  .foot{color:var(--dim);font-size:11px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🩺 对话体检</h1>
+  <div class="sub">多 Agent 会话事后分析 · 上下文堆积检测 · 使用习惯改进建议（数据只读本机，不出网）</div>
+  <div class="topbar">
+    <label style="font-size:13px;color:var(--sub)">时间窗
+      <select id="hours">
+        <option value="24" selected>最近 24 小时</option>
+        <option value="72">最近 3 天</option>
+        <option value="168">最近 7 天</option>
+      </select>
+    </label>
+    <button onclick="load()">重新分析</button>
+    <span id="gen" style="font-size:12px;color:var(--dim)"></span>
+  </div>
+  <div class="counts" id="counts"></div>
+  <div class="habits" id="habits"></div>
+  <div id="list"><div class="empty">加载中…</div></div>
+  <div class="foot">数据源：nanobot sessions.sqlite3 · Hermes state.db · OpenClaw 实例轨迹 (只读) · 估算口径 2.5 字节/token</div>
+</div>
+<script>
+function fmtTok(t){
+  if(t==null) return "—";
+  if(t>=10000) return (t/10000).toFixed(t>=100000?0:1)+"万";
+  return t;
+}
+const LV={critical:{n:"严重堆积",c:"red"},warn:{n:"偏高",c:"orange"},watch:{n:"可留意",c:"orange"},ok:{n:"健康",c:"green"}};
+async function load(){
+  const hours=document.getElementById("hours").value;
+  document.getElementById("list").innerHTML='<div class="empty">扫描中…</div>';
+  try{
+    const r=await fetch("/api/convo-analysis?hours="+hours);
+    const d=await r.json();
+    if(d.error){document.getElementById("list").innerHTML='<div class="empty">出错: '+d.error+'</div>';return;}
+    render(d);
+  }catch(e){document.getElementById("list").innerHTML='<div class="empty">请求失败: '+e+'</div>';}
+}
+function render(d){
+  document.getElementById("gen").textContent="生成于 "+d.generated_at.replace("T"," ")+" · 共 "+d.total_sessions+" 个活跃会话";
+  const c=d.counts;
+  document.getElementById("counts").innerHTML=
+    stat(c.critical||0,"严重堆积 (>50万 tok)","red")+stat(c.warn||0,"偏高 (12–50万)","orange")
+    +stat(c.watch||0,"可留意 (6–12万)","orange")+stat(c.ok||0,"健康","green");
+  document.getElementById("habits").innerHTML="<h2>📊 使用习惯分析</h2><ul>"
+    +d.habits.map(h=>"<li>"+h+"</li>").join("")+"</ul>"
+    +(Object.keys(d.by_agent||{}).length?"<h2 style='margin-top:14px'>🤖 各 Agent 概览</h2><ul>"
+      +Object.entries(d.by_agent).map(([a,v])=>"<li>"+a+"："+v.sessions+" 会话 / "+v.messages+" 条消息 / 单会话最大体量 "+fmtTok(v.max_ctx)+" tok</li>").join("")+"</ul>":"");
+  const list=d.sessions||[];
+  document.getElementById("list").innerHTML = list.length?list.map(s=>{
+    const lv=LV[s.level]||LV.ok;
+    return '<div class="sess '+s.level+'"><div class="head">'
+      +'<span class="agent">'+esc(s.agent)+'</span>'
+      +'<span class="title">'+esc(s.title)+'</span>'
+      +'<span class="tok">~'+fmtTok(s.est_ctx_tokens)+' tok</span></div>'
+      +'<div class="meta"><span>ID '+esc(s.session_id)+'</span><span>'+(s.messages||0)+' 条消息</span>'
+      +(s.api_calls?'<span>'+s.api_calls+' 次 API 调用</span>':'')
+      +(s.span_h!=null?'<span>存活 '+s.span_h+'h</span>':'')
+      +(s.stale_h!=null?'<span>距最后活动 '+s.stale_h+'h</span>':'')
+      +'<span>分级: '+lv.n+'</span></div>'
+      +(s.flags&&s.flags.length?'<div class="flags">'+s.flags.map(f=>"<span>"+esc(f)+"</span>").join("")+'</div>':'')
+      +(s.advice&&s.advice.length?'<div class="advice">'+s.advice.map(esc).join("；")+'</div>':'')
+      +'</div>';
+  }).join(""):'<div class="empty">时间窗内没有活跃会话</div>';
+}
+function stat(n,lab,c){return '<div class="stat '+c+'"><div class="num">'+n+'</div><div class="lab">'+lab+'</div></div>';}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
+load();
+</script>
+</body>
+</html>
