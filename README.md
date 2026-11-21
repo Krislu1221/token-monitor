@@ -27,6 +27,7 @@
 | **MiniMax** | **M Plan** 的 5h / 周用量；按量余额 | API Key（额度）/ 控制台登录态（余额） |
 | **小米 MiMo** | **Token Plan** 套餐用量（含本月）、余额、套餐周期 | 控制台登录态 + 请求签名 |
 
+| **腾讯云 TokenHub** | **Token Plan 套餐额度** + **腾讯云账户余额**（现金 / 信用额度） | SecretId/SecretKey 调管控面 API：套餐 `DescribeTokenPlanPersonalPackage`、余额 `billing DescribeAccountBalance`（建议只读策略 `QcloudTokenHubReadOnlyAccess`） |
 每种指标的展示形态：
 
 - **网页面板** `http://127.0.0.1:8317` — 卡片式汇总、近期趋势线（sparkline）、跳转各平台控制台、本地"备忘余额"手填
@@ -98,6 +99,20 @@ cp config.example.json config.json   # 填入你自己的密钥（该文件已�
 > 只填你有的平台即可；缺哪个就在面板上显示"待配置"，不影响其它平台。
 
 也可以用 `TOKEN_MONITOR_CONFIG=/path/to/my.json` 指定配置文件位置。
+
+**只关某一路（如余额）而保留套餐**：`disabled_balances` 里的平台只停余额取数，套餐额度照常监控。
+
+```json
+{ "disabled_balances": ["minimax", "mimo"] }
+```
+
+腾讯云凭据可放 `.creds/tencent.env`（推荐，权限 600）或 `config.json`：
+
+```
+TENCENT_SECRET_ID=AKID...
+TENCENT_SECRET_KEY=...
+TENCENT_REGION=ap-guangzhou
+```
 
 **临时不看的平台**可以直接停掉（不再请求接口，面板与菜单栏都不显示，历史数据保留）：
 
@@ -217,3 +232,15 @@ packaging/         # macOS .app 打包
 ## License
 
 MIT
+
+
+## 腾讯云 TokenHub（TC3-HMAC-SHA256）
+
+管控面域名 `tokenhub.tencentcloudapi.com`，签名是腾讯云 TC3 规范。**一个必踩的坑**：
+派生签名密钥时，第一层 HMAC 的 key 是 `"TC3" + SecretKey`（不是裸 SecretKey），
+漏掉这个前缀会一直返回 `AuthFailure.SignatureFailure`。
+
+- 套餐额度：`DescribeTokenPlanPersonalPackage`（Version `2026-03-22`，必填 `ProductType=personal`）
+- 账户余额：`billing DescribeAccountBalance`（Version `2018-07-09`，返回单位是**分**，面板已换算成元）
+
+未购买套餐时接口返回 `UNPURCHASED`，面板会显示「未购买」并照常展示账户余额。

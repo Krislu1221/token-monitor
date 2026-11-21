@@ -14,7 +14,19 @@ import rumps
 
 PANEL = "http://127.0.0.1:8317"
 API = PANEL + "/api/status"
-ORDER = ["deepseek", "zhipu", "volc", "qwen", "minimax", "mimo"]
+ORDER = ["deepseek", "zhipu", "volc", "qwen", "minimax", "mimo", "tencent"]
+
+def load_disabled_balances():
+    """config.json 的 disabled_balances：这些平台不建「余额」行，只留套餐行"""
+    import json as _json
+    cfgp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    try:
+        with open(cfgp, encoding="utf-8") as f:
+            _d = _json.load(f) or {}
+        return {str(x).strip() for x in (_d.get("disabled_balances") or [])}
+    except Exception:
+        return set()
+
 
 def load_disabled():
     """与 poller 同一份 config.json: disabled_providers 里的平台不建菜单行"""
@@ -80,7 +92,23 @@ def short(prov):
             return "千问: 待配 AK/SK"
         mv = prov.get("manual")
         return f"千问: 备忘 {mv['value']}" if mv and mv.get("value") else "千问: 待配置"
+    if pid == "tencent":
+        b = a.get("balance") or {}
+        if b.get("ok") and b.get("available") is not None:
+            return f"腾讯: ¥{float(b['available']):.2f}"
+        if a.get("subscribed"):
+            ps = _fmt_periods(a.get("periods"))
+            return f"腾讯: {ps}" if ps else "腾讯: 套餐生效中"
+        if a.get("needs_setup"):
+            return "腾讯: 待配密钥"
+        if b.get("needs_permission"):
+            return "腾讯: 缺 billing 权限"
+        if a.get("subscribed") is False:
+            return "腾讯: 未购套餐"
+        return "腾讯: 查询失败"
     if pid == "minimax":
+        if a.get("balance_off"):
+            return None  # 余额已关：不显示主行，只留 MiniMax M 行
         if a.get("ok") and a.get("available") is not None:
             return f"MiniMax: ¥{float(a['available']):.2f}"
         if a.get("needs_login"):
@@ -89,6 +117,8 @@ def short(prov):
             return "MiniMax: 无订阅"
         return "MiniMax: 查询失败"
     if pid == "mimo":
+        if a.get("balance_off") and a.get("balance") is None:
+            return None  # 余额已关：只留 MiMo TP 行
         if a.get("balance") is not None:
             return f"MiMo: ¥{float(a['balance']):.2f}"
         if a.get("needs_login"):
@@ -177,7 +207,17 @@ class ModelMonitorApp(rumps.App):
         self.mimo_plan_item = None
         menu_items = []
         self.active = [p for p in ORDER if p not in load_disabled()]
+        self.bal_off = load_disabled_balances()
         for pid in self.active:
+            if pid in self.bal_off:
+                # 余额已关：不建主行，只保留该平台的套餐行
+                if pid == "minimax":
+                    self.minimax_plan_item = rumps.MenuItem("MiniMax M: 加载中…")
+                    menu_items.append(self.minimax_plan_item)
+                elif pid == "mimo":
+                    self.mimo_plan_item = rumps.MenuItem("MiMo TP: 加载中…")
+                    menu_items.append(self.mimo_plan_item)
+                continue
             item = rumps.MenuItem("加载中…")
             self.items_by_id[pid] = item
             menu_items.append(item)
@@ -211,8 +251,14 @@ class ModelMonitorApp(rumps.App):
             data = fetch()
             byid = {p["id"]: p for p in data.get("providers", [])}
             for pid in self.active:
+                item = self.items_by_id.get(pid)
+                if item is None:
+                    continue  # 余额已关的平台没有主行
                 p = byid.get(pid)
-                self.items_by_id[pid].title = short(p) if p else f"{pid}: 缺失"
+                label = short(p) if p else f"{pid}: 缺失"
+                if label is None:
+                    continue
+                item.title = label
             if self.volc_coding_item is not None:
                 self.volc_coding_item.title = volc_coding_short(byid.get("volc"))
             if self.volc_balance_item is not None:

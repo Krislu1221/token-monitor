@@ -260,6 +260,22 @@ def query_calls(days=7, model="", channel="", source="", limit=8000):
 # --------------------------------------------------------------------------
 # 密钥装载: 从 nanobot config 读取, 允许环境变量覆盖
 # --------------------------------------------------------------------------
+def _read_env_file(path):
+    """读 KEY=VALUE 形式的 .env 文件, 返回 dict"""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip(chr(34)).strip(chr(39))
+    except Exception:
+        pass
+    return out
+
+
 def load_keys():
     cfg = {}
     # 1) 项目本地 config.json(开源版主路径; 已被 .gitignore 排除, 不会误提交)
@@ -270,7 +286,8 @@ def load_keys():
             for k in ("deepseek", "zhipu", "minimax", "qwen",
                       "volc_agent_plan", "volc_ak", "volc_sk",
                       "volc_ap_key", "volc_ap_ak", "volc_ap_sk",
-                      "aliyun_ak", "aliyun_sk"):
+                      "aliyun_ak", "aliyun_sk",
+                      "tencent_secret_id", "tencent_secret_key", "tencent_region"):
                 if local.get(k):
                     cfg[k] = local[k]
     except Exception:
@@ -295,7 +312,9 @@ def load_keys():
         pass
     # 3) 环境变量优先级最高
     envmap = {"deepseek": "DEEPSEEK_API_KEY", "zhipu": "ZHIPU_API_KEY",
-              "volc_agent_plan": "VOLC_AGENT_PLAN_API_KEY", "qwen": "DASHSCOPE_API_KEY"}
+              "volc_agent_plan": "VOLC_AGENT_PLAN_API_KEY", "qwen": "DASHSCOPE_API_KEY",
+              "tencent_secret_id": "TENCENT_SECRET_ID",
+              "tencent_secret_key": "TENCENT_SECRET_KEY"}
     for k, var in envmap.items():
         v = os.environ.get(var)
         if v:
@@ -337,6 +356,17 @@ def load_keys():
                         cfg["volc_ap_sk"] = line.split("=", 1)[1].strip().strip("\"'")
         except Exception:
             pass
+    # 腾讯云: .creds/tencent.env 或环境变量(TENCENT_SECRET_ID / KEY / REGION)
+    cfg.setdefault("tencent_secret_id", os.environ.get("TENCENT_SECRET_ID"))
+    cfg.setdefault("tencent_secret_key", os.environ.get("TENCENT_SECRET_KEY"))
+    cfg.setdefault("tencent_region", os.environ.get("TENCENT_REGION"))
+    _tc = _read_env_file(os.path.join(BASE_DIR, ".creds", "tencent.env"))
+    if _tc.get("TENCENT_SECRET_ID"):
+        cfg["tencent_secret_id"] = _tc["TENCENT_SECRET_ID"]
+    if _tc.get("TENCENT_SECRET_KEY"):
+        cfg["tencent_secret_key"] = _tc["TENCENT_SECRET_KEY"]
+    if _tc.get("TENCENT_REGION"):
+        cfg["tencent_region"] = _tc["TENCENT_REGION"]
     # 专用 AP 凭据为空时回落共用凭据
     if not cfg.get("volc_ap_ak"):
         cfg["volc_ap_ak"] = cfg.get("volc_ak")
@@ -1198,6 +1228,119 @@ def query_mimo_usage():
     return r
 
 # --------------------------------------------------------------------------
+# 适配器 7: 腾讯云 TokenHub（TC3-HMAC-SHA256 签名）
+#   DescribeTokenPlanPersonalPackage 2026-03-22  个人版套餐额度
+#   billing DescribeAccountBalance 2018-07-09     账户余额（接口单位: 分）
+# 签名要点: 派生密钥初值是 "TC3" + SecretKey; 漏掉前缀会 AuthFailure.SignatureFailure
+# --------------------------------------------------------------------------
+TENCENT_HOST = "tokenhub.tencentcloudapi.com"
+
+
+def _tc3_request(secret_id, secret_key, host, service, action, version, payload,
+                 region="ap-guangzhou"):
+    body = json.dumps(payload or {}, separators=(",", ":"))
+    ts = str(int(time.time()))
+    date = time.strftime("%Y-%m-%d", time.gmtime(int(ts)))
+    ct = "application/json; charset=utf-8"
+    heads = {"content-type": ct, "host": host}
+    signed = ";".join(sorted(heads))
+    ch = "".join(k + ":" + heads[k] + "\n" for k in sorted(heads))
+    canonical = "\n".join(["POST", "/", "", ch, signed,
+                            hashlib.sha256(body.encode()).hexdigest()])
+    scope = date + "/" + service + "/tc3_request"
+    sts = "\n".join(["TC3-HMAC-SHA256", ts, scope,
+                     hashlib.sha256(canonical.encode()).hexdigest()])
+
+    def _hm(k, m):
+        return hmac.new(k, m.encode(), hashlib.sha256).digest()
+
+    k = _hm(("TC3" + secret_key).encode(), date)
+    k = _hm(k, service)
+    k = _hm(k, "tc3_request")
+    sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+    auth = ("TC3-HMAC-SHA256 Credential=" + secret_id + "/" + scope +
+            ", SignedHeaders=" + signed + ", Signature=" + sig)
+    return urllib.request.Request(
+        "https://" + host + "/", data=body.encode(), method="POST",
+        headers={"Authorization": auth, "Content-Type": ct,
+                 "X-TC-Action": action, "X-TC-Timestamp": ts,
+                 "X-TC-Version": version, "X-TC-Region": region})
+
+
+def _tencent_call(secret_id, secret_key, host, service, action, version, payload,
+                  region="ap-guangzhou"):
+    req = _tc3_request(secret_id, secret_key, host, service, action, version,
+                       payload, region)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        body = json.loads(r.read().decode("utf-8"))
+    resp = body.get("Response") or {}
+    if resp.get("Error"):
+        err = resp["Error"]
+        raise RuntimeError(str(err.get("Code")) + ": " + str(err.get("Message"))[:120])
+    return resp
+
+
+def query_tencent_tokenplan(sid, skey, region="ap-guangzhou"):
+    """TokenHub 个人版 Token Plan。未购买时 subscribed=False（走按量计费）。"""
+    try:
+        resp = _tencent_call(sid, skey, TENCENT_HOST, "tokenhub",
+                             "DescribeTokenPlanPersonalPackage", "2026-03-22",
+                             {"ProductType": "personal"}, region)
+    except Exception as e:
+        msg = str(e)
+        if "Unauthorized" in msg or "AuthFailure" in msg:
+            return {"ok": False, "needs_permission": True,
+                    "error": "腾讯云子账号缺 TokenHub 只读权限(" + msg[:90] + ")"}
+        return {"ok": False, "error": msg[:160]}
+
+    status = str(resp.get("PackageStatus") or "UNPURCHASED")
+    if status.upper() in ("UNPURCHASED", "DESTROYED"):
+        return {"ok": True, "subscribed": False, "plan_code": status.lower(),
+                "note": "未购买 Token Plan 个人版套餐（当前走按量计费）"}
+
+    total = _to_num(resp.get("TotalCredits"))
+    used = _to_num(resp.get("TotalUsed"))
+    pct = (used / total * 100.0) if (total and used is not None) else None
+    periods = []
+    if pct is not None:
+        reset = str(resp.get("PeriodEndDate") or "")[:19].replace("T", " ")
+        periods.append({"label": "额度", "pct": float(pct), "used": used,
+                        "total": total, "reset_at": reset or None})
+    return {"ok": True, "subscribed": True, "plan_code": status.lower(),
+            "status": status, "periods": periods,
+            "cycle": {"current": resp.get("CurrentCycle"),
+                      "total": resp.get("TotalCycles"),
+                      "remain": resp.get("RemainCycles")},
+            "expire_at": str(resp.get("ExpireTime") or "")[:19].replace("T", " "),
+            "auto_renew": resp.get("AutoRenewFlag"),
+            "tokens": {"input": resp.get("InputToken"),
+                       "output": resp.get("OutputToken"),
+                       "cache": resp.get("CacheToken")},
+            "via": "tc3"}
+
+
+def query_tencent_balance(sid, skey, region="ap-guangzhou"):
+    """腾讯云账户余额（接口返回单位是分，换算成元）"""
+    try:
+        resp = _tencent_call(sid, skey, "billing.tencentcloudapi.com", "billing",
+                             "DescribeAccountBalance", "2018-07-09", {}, region)
+    except Exception as e:
+        msg = str(e)
+        if "Unauthorized" in msg or "AuthFailure" in msg or "NotAuthorized" in msg:
+            return {"ok": False, "needs_permission": True,
+                    "error": "腾讯云子账号缺 billing:DescribeAccountBalance 权限(" + msg[:80] + ")"}
+        return {"ok": False, "error": msg[:160]}
+    bal = _to_num(resp.get("Balance"))
+    real = _to_num(resp.get("RealBalance"))
+    credit = _to_num(resp.get("CreditBalance"))
+    use = real if real is not None else bal
+    return {"ok": True, "currency": "CNY",
+            "available": (use / 100.0) if use is not None else None,
+            "cash": (bal / 100.0) if bal is not None else None,
+            "credit": (credit or 0) / 100.0}
+
+
+# --------------------------------------------------------------------------
 # 编排
 # --------------------------------------------------------------------------
 PROVIDER_META = [
@@ -1213,6 +1356,8 @@ PROVIDER_META = [
      "console": "https://platform.minimax.cn"},
     {"id": "mimo", "label": "小米 MiMo", "emoji": "📱", "kind": "Token Plan 配额 + 余额",
      "console": "https://platform.xiaomimimo.com/#/console/balance"},
+    {"id": "tencent", "label": "腾讯云 TokenHub", "emoji": "☁️", "kind": "Token Plan 套餐 + 账户余额",
+     "console": "https://console.cloud.tencent.com/tokenhub"},
 ]
 
 def load_manual():
@@ -1239,11 +1384,26 @@ def disabled_providers():
     return out
 
 
+def disabled_balances():
+    """config.json 的 disabled_balances: 只停这些平台的「余额」取数, 套餐额度照常监控"""
+    out = set()
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                d = json.load(f) or {}
+            for x in d.get("disabled_balances") or []:
+                out.add(str(x).strip())
+    except Exception:
+        pass
+    return out
+
+
 def collect_status():
     keys = load_keys()
     manual = load_manual()
     out = []
     off = disabled_providers()
+    off_bal = disabled_balances()
     for m in PROVIDER_META:
         if m["id"] in off:
             continue
@@ -1300,7 +1460,12 @@ def collect_status():
                 rec["key_present"] = bool(keys.get("volc_ap_key"))
             elif m["id"] == "minimax":
                 ck_mm, _gid, _host = _minimax_creds()
-                if ck_mm:
+                if m["id"] in off_bal:
+                    r = {"ok": False, "balance_off": True,
+                         "note": "余额监控已暂时关闭（仅保留 M Plan 额度）"}
+                    rec["auth_kind"] = "API key（余额已关）"
+                    rec["kind"] = "M Plan 配额"
+                elif ck_mm:
                     r = query_minimax_balance()
                     rec["auth_kind"] = "登录态 + API key"
                 else:
@@ -1318,8 +1483,32 @@ def collect_status():
                 rec["auto"] = r
             elif m["id"] == "mimo":
                 r = query_mimo_usage()
-                rec["auth_kind"] = "控制台登录态"
+                if m["id"] in off_bal:
+                    r.pop("balance", None)
+                    r["balance_off"] = True
+                rec["auth_kind"] = "控制台登录态" + ("（余额已关）" if m["id"] in off_bal else "")
+                if m["id"] in off_bal:
+                    rec["kind"] = "Token Plan 配额"
                 rec["key_present"] = os.path.exists(MIMO_STATE_FILE)
+                rec["auto"] = r
+            elif m["id"] == "tencent":
+                sid, skey = keys.get("tencent_secret_id"), keys.get("tencent_secret_key")
+                region = keys.get("tencent_region") or "ap-guangzhou"
+                if sid and skey:
+                    r = query_tencent_tokenplan(sid, skey, region)
+                    if "tencent" not in off_bal:
+                        try:
+                            r["balance"] = query_tencent_balance(sid, skey, region)
+                        except Exception as e:
+                            r["balance"] = {"ok": False,
+                                            "error": (type(e).__name__ + ": " + str(e))[:160]}
+                    else:
+                        r["balance_off"] = True
+                    rec["auth_kind"] = "SecretId/Key"
+                else:
+                    r = {"ok": False,
+                         "needs_setup": "未配置腾讯云 SecretId/SecretKey（写入 .creds/tencent.env 或 config.json）"}
+                    rec["auth_kind"] = "未配置"
                 rec["auto"] = r
             else:  # qwen -> 阿里云 BSS 账户余额(只读 AK/SK)
                 ak, sk = keys.get("aliyun_ak"), keys.get("aliyun_sk")
@@ -1375,6 +1564,15 @@ def append_history(data):
                 for x in plan.get("periods") or []:
                     if x.get("label") == "weekly" and x.get("pct") is not None:
                         row["minimax_m"] = round(float(x["pct"]), 1); got = True
+        elif pid == "tencent":
+            b = a.get("balance") or {}
+            if b.get("ok") and b.get("available") is not None:
+                row["tencent"] = round(float(b["available"]), 2)
+                got = True
+            for x in a.get("periods") or []:
+                if x.get("pct") is not None:
+                    row["tencent_tp"] = round(float(x["pct"]), 1)
+                    got = True
         elif pid == "mimo":
             for x in a.get("periods") or []:
                 if x.get("label") == "plan" and x.get("pct") is not None:

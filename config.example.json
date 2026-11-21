@@ -11,5 +11,9 @@
   "minimax": "sk-cp-你的MiniMaxKey",
   "qwen": "sk-你的阿里云百炼Key",
   "aliyun_ak": "LTAI你的阿里云AK",
-  "aliyun_sk": "你的阿里云SK"
+  "aliyun_sk": "你的阿里云SK",
+  "tencent_secret_id": "AKID你的腾讯云SecretId（只读即可）",
+  "tencent_secret_key": "你的腾讯云SecretKey",
+  "tencent_region": "ap-guangzhou",
+  "disabled_balances": []
 }

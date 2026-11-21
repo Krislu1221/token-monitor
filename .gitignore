@@ -1,5 +1,8 @@
 # ===== 密钥与账号数据：绝对不要提交 =====
 config.json
+config.json*
+*.bak-*
+*.bak
 .creds/
 .profiles/
 *.env

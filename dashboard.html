@@ -10,7 +10,7 @@
     --line:#1f2937; --line2:#273449;
     --txt:#e8ecf4; --sub:#8b95a7; --dim:#5b6577;
     --green:#22c55e; --orange:#f59e0b; --red:#ef4444;
-    --ds:#3b82f6; --zp:#8b5cf6; --qw:#f97316; --vc:#06b6d4; --mm:#ec4899; --mi:#ff6900;
+    --ds:#3b82f6; --zp:#8b5cf6; --qw:#f97316; --vc:#06b6d4; --mm:#ec4899; --mi:#ff6900; --tc:#2f6fed;
     --radius:16px; --shadow:0 10px 30px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -71,6 +71,7 @@
   .card[data-c="qw"]::before{background:linear-gradient(90deg,var(--qw),transparent)}
   .card[data-c="vc"]::before{background:linear-gradient(90deg,var(--vc),transparent)}
   .card[data-c="mi"]::before{background:linear-gradient(90deg,var(--mi),transparent)}
+  .card[data-c="tc"]::before{background:linear-gradient(90deg,var(--tc),transparent)}
 
   .chead{display:flex;align-items:center;gap:10px}
   .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:17px;color:#fff}
@@ -123,10 +124,11 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const ACCENT = {ds:"var(--ds)",zp:"var(--zp)",qw:"var(--qw)",vc:"var(--vc)",mm:"var(--mm)",mi:"var(--mi)"};
+const ACCENT = {ds:"var(--ds)",zp:"var(--zp)",qw:"var(--qw)",vc:"var(--vc)",mm:"var(--mm)",mi:"var(--mi)",tc:"var(--tc)"};
 const SERIES = {deepseek:{k:"deepseek",c:"#3b82f6",tag:"近10h 余额 ¥"},zhipu:{k:"zhipu",c:"#8b5cf6",tag:"近10h 余额 ¥"},
                 qwen:{k:"qwen",c:"#f97316",tag:"近10h 余额 ¥"},volc:{k:"volc_weekly",c:"#06b6d4",tag:"近10h 周配额 %"},minimax:{k:"minimax_m",c:"#ec4899",tag:"近10h M Plan 周用量 %"},
-                mimo:{k:"mimo_tp",c:"#ff6900",tag:"近10h TP 套餐用量 %"}};
+                mimo:{k:"mimo_tp",c:"#ff6900",tag:"近10h TP 套餐用量 %"},
+                tencent:{k:"tencent",c:"#2f6fed",tag:"近10h 账户余额 ¥"}};
 
 function esc(s){const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
 function fmt(v,dp=2){return (typeof v==="number")?v.toFixed(dp):"—";}
@@ -148,8 +150,8 @@ function sparkSVG(hist,key,color){
 }
 
 function miniChips(data){
-  const map={deepseek:["ds","DeepSeek"],zhipu:["zp","智谱"],volc:["vc","火山"],qwen:["qw","阿里云"],minimax:["mm","MiniMax"],mimo:["mi","MiMo"]};
-  const colors={ds:"#3b82f6",zp:"#8b5cf6",qw:"#f97316",vc:"#06b6d4",mm:"#ec4899",mi:"#ff6900"};
+  const map={deepseek:["ds","DeepSeek"],zhipu:["zp","智谱"],volc:["vc","火山"],qwen:["qw","阿里云"],minimax:["mm","MiniMax"],mimo:["mi","MiMo"],tencent:["tc","腾讯云"]};
+  const colors={ds:"#3b82f6",zp:"#8b5cf6",qw:"#f97316",vc:"#06b6d4",mm:"#ec4899",mi:"#ff6900",tc:"#2f6fed"};
   return data.providers.map(p=>{
     const [ck,name]=map[p.id]||[];
     let v="—",color="";
@@ -160,6 +162,7 @@ function miniChips(data){
     else if(p.id==="qwen"&&a.ok){v=`¥${fmt(a.available)}`;color=balClass(a.available);}
     else if(p.id==="minimax"&&a.ok&&a.available!=null){v=`¥${fmt(a.available)}`;color=balClass(a.available);}
     else if(p.id==="mimo"&&a.ok){const pl=(a.periods||[]).find(x=>x.label==="plan");v=pl?`${pl.pct.toFixed(1)}%`:"—";color=pl?pctClass(pl.pct):"dim";}
+    else if(p.id==="tencent"){const b=a.balance||{};if(b.ok&&b.available!=null){v=`¥${fmt(b.available)}`;color=balClass(b.available);}else v="未购";}
     else v="…";
     return `<div class="mini"><div class="sq" style="background:${colors[ck]||'#3f4a5f'}">${p.emoji}</div>
       <div><div class="t">${name}</div><div class="v ${color||"dim"}">${esc(v)}</div></div></div>`;
@@ -173,16 +176,16 @@ function render(data,hist){
   const grid=$("grid");grid.innerHTML="";
   const byId={};
   data.providers.forEach(p=>byId[p.id]=p);
-  const cardIds=["deepseek","zhipu","volc","qwen","minimax","mimo"];
+  const cardIds=["deepseek","zhipu","volc","qwen","minimax","mimo","tencent"];
   for(const pid of cardIds){
     const p=byId[pid];if(!p)continue;
     const a=p.auto||{};
     const c=ACCENT[pid==="qwen"?"qw":pid];
     const ck=SERIES[pid];
     const card=document.createElement("div");
-    card.className="card";card.dataset.c={deepseek:"ds",zhipu:"zp",qwen:"qw",volc:"vc",minimax:"mm",mimo:"mi"}[pid];
+    card.className="card";card.dataset.c={deepseek:"ds",zhipu:"zp",qwen:"qw",volc:"vc",minimax:"mm",mimo:"mi",tencent:"tc"}[pid];
     let hero="",rows="",pillCls="dot",badgeColor="#3f4a5f",badgeTxt=p.emoji;
-    const badgeClr={ds:"#2563eb",zp:"#7c3aed",qw:"#ea580c",vc:"#0891b2",mm:"#db2777",mi:"#ea580c"};
+    const badgeClr={ds:"#2563eb",zp:"#7c3aed",qw:"#ea580c",vc:"#0891b2",mm:"#db2777",mi:"#ea580c",tc:"#1d4ed8"};
     badgeColor=badgeClr[card.dataset.c];
 
     if(pid==="deepseek"){
@@ -271,7 +274,10 @@ function render(data,hist){
         else{planRows=`<div class="row"><span class="lbl" style="font-weight:600">M Plan</span><span class="num dim">${esc(String(plan.error||"—").slice(0,56))}</span></div>`;}
       }
       let balRows="";
-      if(a.ok&&a.available!=null){
+      if(a.balance_off){
+        // 余额监控已关闭：完全不显示余额相关行
+        balRows="";
+      }else if(a.ok&&a.available!=null){
         balRows=`<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">按量余额</span><span class="num ${balClass(a.available)}">¥${fmt(a.available)}</span></div>
               <div class="row"><span class="lbl">现金 / 代金券</span><span class="num dim">¥${fmt(a.cash)} / ¥${fmt(a.voucher)}</span></div>
               <div class="row"><span class="lbl">授信 / 欠费</span><span class="num dim">¥${fmt(a.credit)} / ¥${fmt(a.owed)}</span></div>
@@ -303,14 +309,47 @@ function render(data,hist){
         hero=plan?`<span class="big ${pctClass(plan.pct)}">${plan.pct.toFixed(1)}%</span><span class="unit">Token Plan 用量</span>`:`<span class="big">—</span>`;
         rows=rowP(plan,"套餐额度")+rowP(comp,"补偿额度")+rowP(month,"本月额度")
              +`<div class="row" style="margin-top:6px"><span class="lbl">套餐</span><span class="num dim">${esc(a.plan_code||"—")}${a.expired?" · 已过期":""}</span></div>`;
-        if(a.balance!=null){rows+=`<div class="row"><span class="lbl">账户余额</span><span class="num ${balClass(a.balance)}">¥${fmt(a.balance)}</span></div>`;}
+        if(a.balance!=null&&!a.balance_off){rows+=`<div class="row"><span class="lbl">账户余额</span><span class="num ${balClass(a.balance)}">¥${fmt(a.balance)}</span></div>`;}
       }else if(a.needs_login){
         pillCls="dot err";hero=`<span class="big r">需重登</span>`;
         rows=`<div class="errbox">${esc(a.error||"MiMo 登录态失效")}<br><br>在 terminal 里运行一次:<br><code>.venv/bin/python mimo_login.py</code></div>`;
       }else if(a.ok&&a.subscribed===false){
         pillCls="dot warn";hero=`<span class="big o">未订阅</span>`;
-        rows=`<div class="note">${esc(a.note||"未发现 Token Plan 额度")}</div>`+(a.balance!=null?`<div class="row"><span class="lbl">账户余额</span><span class="num">¥${fmt(a.balance)}</span></div>`:"");
+        rows=`<div class="note">${esc(a.note||"未发现 Token Plan 额度")}</div>`+((a.balance!=null&&!a.balance_off)?`<div class="row"><span class="lbl">账户余额</span><span class="num">¥${fmt(a.balance)}</span></div>`:"");
       }else{pillCls="dot err";hero=`<span class="big r">—</span>`;rows=errboxHtml(a.error);}
+    }
+    else if(pid==="tencent"){
+      const b=a.balance||{};
+      const pl=(a.periods||[])[0];
+      const rowP=(x,name)=>x?`<div class="row"><span class="lbl">${name}</span><span class="num ${pctClass(x.pct)}">${x.pct.toFixed(1)}%${x.total?`<span class="dim" style="font-weight:400;margin-left:6px">${tok(x.used)}/${tok(x.total)}</span>`:""}${x.reset_at?`<span class="dim" style="font-weight:400;margin-left:6px">到 ${esc(x.reset_at)}</span>`:""}</span></div>`:"";
+      if(b.ok&&b.available!=null){
+        pillCls="dot "+(b.available<10?"err":b.available<30?"warn":"ok");
+        hero=`<span class="big ${balClass(b.available)}">¥${fmt(b.available)}</span><span class="unit">账户余额</span>`;
+      }else if(a.subscribed&&pl){
+        pillCls="dot ok";
+        hero=`<span class="big ${pctClass(pl.pct)}">${pl.pct.toFixed(1)}%</span><span class="unit">套餐额度已用</span>`;
+      }else{
+        pillCls="dot dim"; hero=`<span class="big dim">—</span><span class="unit">余额不可用</span>`;
+      }
+      let ttRows="";
+      if(a.needs_setup){ttRows=`<div class="note">${esc(a.needs_setup)}</div>`;}
+      else if(a.subscribed){
+        ttRows=`<div class="row"><span class="lbl" style="font-weight:600">Token Plan</span><span class="num dim">${esc(a.status||a.plan_code||"生效中")}</span></div>`
+              +rowP(pl,"套餐额度")
+              +(a.cycle?`<div class="row"><span class="lbl">周期</span><span class="num dim">第 ${esc(String(a.cycle.current||"?"))}/${esc(String(a.cycle.total||"?"))} 期 · 剩 ${esc(String(a.cycle.remain||"?"))} 期</span></div>`:"")
+              +(a.expire_at?`<div class="row"><span class="lbl">到期</span><span class="num dim">${esc(a.expire_at)}</span></div>`:"")
+              +(a.auto_renew!=null?`<div class="row"><span class="lbl">自动续费</span><span class="num dim">${a.auto_renew?"已开启":"未开启"}</span></div>`:"");
+      }else if(a.subscribed===false){
+        ttRows=`<div class="row"><span class="lbl" style="font-weight:600">Token Plan</span><span class="num dim">未购买</span></div>`
+              +`<div class="note" style="margin-top:6px">${esc(a.note||"当前走按量计费")}</div>`;
+      }
+      const vbb=b.ok&&b.available!=null
+        ? `<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">账户余额</span><span class="num ${balClass(b.available)}">¥${fmt(b.available)}</span></div>`
+          +`<div class="row"><span class="lbl">现金 / 信用额度</span><span class="num dim">¥${fmt(b.cash)} / ¥${fmt(b.credit)}</span></div>`
+        : a.balance_off
+          ? `<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">账户余额</span><span class="num dim">已暂时关闭</span></div>`
+          : `<div class="row" style="margin-top:8px"><span class="lbl" style="font-weight:600">账户余额</span><span class="num ${b.needs_permission?"err":"dim"}">${esc(b.needs_permission?"缺 billing 权限":(String(b.error||"—").slice(0,44)))}</span></div>`;
+      rows=ttRows+vbb;
     }
     else{ // qwen
       if(a.ok){pillCls="dot "+(a.available<30?"warn":"ok");
@@ -340,6 +379,7 @@ function render(data,hist){
     if(p.id==="zhipu")return p.auto&&p.auto.needs_login?"⚠️ 登录态失效":"🧠 登录态已就位";
     if(p.id==="volc")return p.auth_kind==="AK/SK"?"🔑 AK/SK 长期":"🦺 SSO 兜底";
     if(p.id==="mimo")return p.key_present?"🍪 控制台登录态":"⚠️ 未登录(需 mimo_login.py)";
+    if(p.id==="tencent")return p.auth_kind==="SecretId/Key"?"🔑 SecretId/Key":"⚠️ 未配置密钥";
     if(p.id==="minimax")return p.has_key?"🔑 API key":"⚠️ 未配置 key";
     return p.has_key===false?"⚠️ 本机未找到 key":"🔑 key 已就位";
   }
