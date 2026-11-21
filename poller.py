@@ -12,6 +12,7 @@ model-monitor poller + 本地常开面板 (v1, 零第三方依赖, 仅标准库)
   1) ~/.nanobot/config.json  的 providers.*.apiKey (deepseek / zhipu / volcengine_agent_plan / qwen)
   2) 同名环境变量覆盖: DEEPSEEK_API_KEY / ZHIPU_API_KEY / VOLC_AGENT_PLAN_API_KEY / DASHSCOPE_API_KEY
 """
+import io
 import json
 import os
 import re
@@ -1087,15 +1088,25 @@ def _mimo_get(path, header):
     try:
         return _mimo_signed_get(path, header)
     except urllib.error.HTTPError as e:
-        code = ""
+        raw = ""
         try:
-            code = (json.loads(e.read().decode("utf-8")) or {}).get("code") or ""
+            raw = e.read().decode("utf-8", "ignore")
         except Exception:
             pass
-        if e.code in (401, 403) and str(code).startswith("SIGN") or code == "TIMESTAMP_INVALID":
+        code = ""
+        try:
+            code = str((json.loads(raw) or {}).get("code") or "")
+        except Exception:
+            pass
+        if (e.code in (401, 403) and code.startswith("SIGN")) or code == "TIMESTAMP_INVALID":
             _mimo_sign_cache["key"] = None
             return _mimo_signed_get(path, header, force_key=True)
-        raise
+        # 把响应体挂回异常：调用方要拿它区分「登录态失效」和「签名/权限问题」
+        err = urllib.error.HTTPError(e.url, e.code, e.reason, e.headers,
+                                     io.BytesIO(raw.encode("utf-8")))
+        err.body_text = raw
+        err.mimo_code = code
+        raise err
 
 def _mimo_token_period(seg, label, reset_at=None):
     """MiMo 额度条目 → 统一 periods 条目。
@@ -1133,17 +1144,26 @@ def query_mimo_usage():
         detail = _mimo_get("/tokenPlan/detail", header)
         balance = _mimo_get("/balance", header)
     except urllib.error.HTTPError as e:
-        try:
-            body = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            body = {}
-        code = str((body or {}).get("code") or "") if isinstance(body, dict) else ""
+        raw = getattr(e, "body_text", "")
+        code = getattr(e, "mimo_code", "") or ""
+        body = {}
+        if raw:
+            try:
+                body = json.loads(raw) or {}
+            except Exception:
+                body = {}
+        if not code and isinstance(body, dict):
+            code = str(body.get("code") or "")
+        # 401 / UNAUTHORIZED / loginUrl → 登录态失效（小米过期后常返回空 body 的 401）
+        if e.code in (401, 403) and not code.startswith("SIGN") and code != "TIMESTAMP_INVALID":
+            return {"ok": False, "needs_login": True,
+                    "error": "MiMo 登录态已过期：在项目目录运行 .venv/bin/python mimo_login.py 重新登录一次"}
         if code == "UNAUTHORIZED" or (isinstance(body, dict) and body.get("loginUrl")):
             return {"ok": False, "needs_login": True,
-                    "error": f"MiMo 登录态失效(HTTP {e.code}): 重跑 mimo_login.py"}
+                    "error": "MiMo 登录态已过期：在项目目录运行 .venv/bin/python mimo_login.py 重新登录一次"}
         if code.startswith("SIGN") or code == "TIMESTAMP_INVALID":
             return {"ok": False, "error": f"MiMo 接口签名失败({code}): 检查本机时钟，稍后自动重试"}
-        return {"ok": False, "error": f"HTTP {e.code}: {code or str(body)[:80]}"}
+        return {"ok": False, "error": f"HTTP {e.code}: {code or raw[:80] or '无响应体'}"}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
 

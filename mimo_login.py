@@ -99,6 +99,26 @@ def summarize(ver):
     return s
 
 
+NOTIFY_STAMP = os.path.join(CREDS, "mimo-notify.stamp")
+
+
+def notify_failure(auto_mode, reason):
+    """--auto 续期失败时弹通知，最多每 24h 一次，避免刷屏。"""
+    try:
+        if os.path.exists(NOTIFY_STAMP):
+            age = time.time() - os.path.getmtime(NOTIFY_STAMP)
+            if age < 86400:
+                return
+        msg = str(reason).replace('"', "'")[:120]
+        apple = 'display notification "%s" with title "Token Monitor · MiMo 需重登"' % msg
+        os.system("/usr/bin/osascript -e " + json.dumps(apple))
+        with open(NOTIFY_STAMP, "w") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+        os.chmod(NOTIFY_STAMP, 0o600)
+    except Exception:
+        pass
+
+
 def main():
     auto = "--auto" in sys.argv[1:]
     with sync_playwright() as p:
@@ -150,6 +170,8 @@ def main():
         ctx.close()
         if not logged:
             print("未确认登录态;请在有界面的终端里重跑 `mimo_login.py` 手动登录。", flush=True)
+            if auto:
+                notify_failure(True, "MiMo 登录态已过期，监控取不到额度。运行 mimo_login.py 重登一次")
             sys.exit(2)
 
 
