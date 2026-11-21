@@ -99,6 +99,16 @@ cp config.example.json config.json   # 填入你自己的密钥（该文件已�
 
 也可以用 `TOKEN_MONITOR_CONFIG=/path/to/my.json` 指定配置文件位置。
 
+**临时不看的平台**可以直接停掉（不再请求接口，面板与菜单栏都不显示，历史数据保留）：
+
+```bash
+.venv/bin/python providers.py list              # 看哪些启用了
+.venv/bin/python providers.py disable zhipu qwen  # 停用
+.venv/bin/python providers.py enable  zhipu     # 恢复
+```
+
+等价于在 `config.json` 里写 `"disabled_providers": ["zhipu"]`。
+
 ## 需要登录态的平台
 
 部分平台的用量接口只对**控制台会话**开放（推理 Key 读不到），需要各自登录一次：
