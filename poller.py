@@ -1222,11 +1222,31 @@ def load_manual():
     except Exception:
         return {}
 
+def disabled_providers():
+    """config.json 的 disabled_providers: 暂不监控的平台(不再请求其接口, 面板也不显示)"""
+    out = set()
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                d = json.load(f) or {}
+            for x in d.get("disabled_providers") or []:
+                out.add(str(x).strip())
+    except Exception:
+        pass
+    for x in (os.environ.get("TOKEN_MONITOR_DISABLED") or "").split(","):
+        if x.strip():
+            out.add(x.strip())
+    return out
+
+
 def collect_status():
     keys = load_keys()
     manual = load_manual()
     out = []
+    off = disabled_providers()
     for m in PROVIDER_META:
+        if m["id"] in off:
+            continue
         rec = {"id": m["id"], "label": m["label"], "emoji": m["emoji"],
                "kind": m["kind"], "console": m["console"], "manual": manual.get(m["id"])}
         key_name = "volc_agent_plan" if m["id"] == "volc" else m["id"]
@@ -1313,7 +1333,7 @@ def collect_status():
         rec["queried_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         out.append(rec)
     return {"updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "providers": out,
-            "cache_ttl_s": CACHE_TTL}
+            "disabled": sorted(off), "cache_ttl_s": CACHE_TTL}
 
 # --------------------------------------------------------------------------
 # 状态缓存 + 存储

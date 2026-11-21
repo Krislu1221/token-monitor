@@ -16,6 +16,17 @@ PANEL = "http://127.0.0.1:8317"
 API = PANEL + "/api/status"
 ORDER = ["deepseek", "zhipu", "volc", "qwen", "minimax", "mimo"]
 
+def load_disabled():
+    """与 poller 同一份 config.json: disabled_providers 里的平台不建菜单行"""
+    import json as _json
+    cfgp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    try:
+        with open(cfgp, encoding="utf-8") as f:
+            d = _json.load(f) or {}
+        return {str(x).strip() for x in (d.get("disabled_providers") or [])}
+    except Exception:
+        return set()
+
 def fetch():
     with urllib.request.urlopen(API, timeout=8) as r:
         return json.loads(r.read().decode("utf-8"))
@@ -165,7 +176,8 @@ class ModelMonitorApp(rumps.App):
         self.minimax_plan_item = None
         self.mimo_plan_item = None
         menu_items = []
-        for pid in ORDER:
+        self.active = [p for p in ORDER if p not in load_disabled()]
+        for pid in self.active:
             item = rumps.MenuItem("加载中…")
             self.items_by_id[pid] = item
             menu_items.append(item)
@@ -198,7 +210,7 @@ class ModelMonitorApp(rumps.App):
         try:
             data = fetch()
             byid = {p["id"]: p for p in data.get("providers", [])}
-            for pid in ORDER:
+            for pid in self.active:
                 p = byid.get(pid)
                 self.items_by_id[pid].title = short(p) if p else f"{pid}: 缺失"
             if self.volc_coding_item is not None:
