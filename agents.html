@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>按 Agent 拆分 · Token Monitor</title>
+<style>
+  :root{--bg:#0b0e14;--card:#141a26;--card2:#18202f;--line:#1f2937;--line2:#273449;
+    --txt:#e8ecf4;--sub:#8b95a7;--dim:#5b6577;--radius:14px}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(1100px 500px at 85% -10%,rgba(59,130,246,.10),transparent 60%),var(--bg);
+    color:var(--txt);font:14px/1.55 -apple-system,"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+    min-height:100vh;padding:22px clamp(14px,3vw,36px) 40px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  h1{font-size:18px;font-weight:700}
+  h1 small{display:block;font-size:11.5px;color:var(--sub);font-weight:500;margin-top:2px}
+  .spacer{flex:1}
+  select,button{background:var(--card);border:1px solid var(--line);color:var(--txt);
+    border-radius:9px;padding:7px 10px;font-size:12.5px;outline:none;cursor:pointer}
+  button:hover,select:hover{border-color:var(--line2)}
+  a.back{color:var(--sub);text-decoration:none;font-size:12.5px}
+  a.back:hover{color:var(--txt)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:12px}
+  .hd{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .agent{font-weight:700;font-size:14px}
+  .tot{color:var(--sub);font-size:12px;margin-left:auto}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{color:var(--dim);font-weight:600;text-align:right;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  td{padding:7px 8px;border-bottom:1px solid rgba(31,41,55,.6);font-variant-numeric:tabular-nums}
+  tr.model:hover{background:var(--card2);cursor:pointer}
+  td.mdl{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .bar{height:3px;border-radius:2px;background:linear-gradient(90deg,#2563eb,#6d28d9);margin-top:4px}
+  .hint{color:var(--dim);font-size:11.5px;margin-top:14px;line-height:1.7}
+  .chip{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:999px;
+    padding:2px 9px;font-size:11.5px;color:var(--sub);margin-right:6px}
+  .empty{color:var(--dim);padding:20px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>按 Agent 拆分<small id="sub">本机各 agent 的模型用量（来自各自的会话日志）</small></h1>
+    <div class="spacer"></div>
+    <select id="days">
+      <option value="1">今天</option>
+      <option value="7" selected>近 7 天</option>
+      <option value="30">近 30 天</option>
+      <option value="90">近 90 天</option>
+    </select>
+    <select id="model"><option value="">全部模型</option></select>
+    <button id="refresh">立即刷新</button>
+    <a class="back" href="/">← 回面板</a>
+  </header>
+  <div id="views"></div>
+  <div class="hint">
+    口径：<b>DSH</b> 读 <code>~/.dsh/sessions</code>（子代理按 delegationDepth 区分）；<b>Claude Code</b> 读
+    <code>~/.claude/projects</code>（<code>subagents/</code> 单独算一个 agent）；<b>nanobot</b> 读
+    <code>~/.nanobot/llm_usage.sqlite3</code>（user/dream/cron 分别算）。
+    平台侧（火山/腾讯等）只能按 API Key / 端点统计，分不出是哪个 agent —— 那份请用「调用明细」页。
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const fmtM = v => v >= 1e9 ? (v/1e9).toFixed(2)+"B" : v >= 1e6 ? (v/1e6).toFixed(1)+"M" : v >= 1e3 ? (v/1e3).toFixed(1)+"K" : String(v);
+const esc = s => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+let lastRows = [];
+function render(data){
+  lastRows = data.rows || [];
+  const msel = $("model"), cur = msel.value;
+  msel.innerHTML = '<option value="">全部模型</option>' +
+    (data.models || []).map(m => '<option value="' + esc(m) + '"' + (m===cur?" selected":"") + '>' + esc(m) + '</option>').join("");
+  $("sub").textContent = "近 " + data.days + " 天 · " + lastRows.length + " 条 · 更新于 " + data.updated_at;
+  if (!lastRows.length){ $("views").innerHTML = '<div class="card empty">这段时间没有记录到任何 agent 调用</div>'; return; }
+  const byAgent = {};
+  lastRows.forEach(r => (byAgent[r.agent] = byAgent[r.agent] || []).push(r));
+  const agents = Object.keys(byAgent).sort((a,b) =>
+    byAgent[b].reduce((s,x)=>s+x.total,0) - byAgent[a].reduce((s,x)=>s+x.total,0));
+  $("views").innerHTML = agents.map(a => {
+    const rows = byAgent[a].slice().sort((x,y)=>y.total-x.total);
+    const tot = rows.reduce((s,x)=>s+x.total,0), calls = rows.reduce((s,x)=>s+x.calls,0);
+    const max = rows[0].total || 1;
+    return '<div class="card"><div class="hd"><span class="agent">' + esc(a) + '</span>' +
+      '<span class="chip">' + rows.length + ' 个模型</span>' +
+      '<span class="tot">' + fmtM(tot) + ' tokens · ' + calls + ' 次调用</span></div>' +
+      '<table><thead><tr><th>模型 / 提供方</th><th>调用</th><th>输入</th><th>输出</th><th>缓存命中</th><th>合计</th></tr></thead><tbody>' +
+      rows.map(r => '<tr class="model" data-model="' + esc(r.model) + '" title="点这一行=只看这个模型">' +
+        '<td><span class="mdl">' + esc(r.model) + '</span>' +
+        '<div style="color:var(--dim);font-size:11px;margin-top:2px">' + esc(r.provider) + '</div>' +
+        '<div class="bar" style="width:' + Math.max(2,(r.total/max)*100).toFixed(0) + '%"></div></td>' +
+        '<td>' + r.calls + '</td><td>' + fmtM(r.input) + '</td><td>' + fmtM(r.output) + '</td>' +
+        '<td>' + (r.hit ? r.hit + "%" : "—") + '</td><td>' + fmtM(r.total) + '</td></tr>').join("") +
+      '</tbody></table></div>';
+  }).join("");
+  document.querySelectorAll("tr.model").forEach(tr => tr.onclick = () => {
+    const m = tr.dataset.model;
+    $("model").value = ($("model").value === m) ? "" : m;
+    load();
+  });
+}
+async function load(){
+  const q = "?days=" + $("days").value + "&model=" + encodeURIComponent($("model").value || "");
+  try{ const r = await fetch("/api/agents" + q); render(await r.json()); }
+  catch(e){ $("views").innerHTML = '<div class="card empty">读取失败：' + esc(e.message) + '</div>'; }
+}
+$("days").onchange = () => { $("model").value = ""; load(); };
+$("model").onchange = load;
+$("refresh").onclick = load;
+load();
+</script>
+</body>
+</html>

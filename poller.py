@@ -1341,6 +1341,174 @@ def query_tencent_balance(sid, skey, region="ap-guangzhou"):
 
 
 # --------------------------------------------------------------------------
+# 按 Agent 拆分: 从各 agent 自己的会话日志里提取 (agent × 模型 × token)
+#   DSH        ~/.dsh/sessions/**/session.jsonl.zstd   request/header 带 model, assistant/chunk 带 usage
+#   Claude Code ~/.claude/projects/**/*.jsonl          message.model + message.usage, subagents/ 即子代理
+#   nanobot     ~/.nanobot/llm_usage.sqlite3           provider/model + source(user/dream/cron)
+# 说明: 平台侧(火山/腾讯)只能按 API Key / 端点统计, 无法区分是哪个 agent;
+#       "每个 agent 用了多少" 只能在本机日志这一侧算。
+# --------------------------------------------------------------------------
+DSH_SESSIONS_DIR = os.path.expanduser("~/.dsh/sessions")
+CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+
+
+def _scan_dsh_agents(days, model_filter):
+    """遍历 DSH 会话日志, 返回 {(agent, provider, model): [calls, in, out, cache]}"""
+    out = {}
+    cutoff_ms = (time.time() - (days or 0) * 86400) * 1000 if days else 0
+    if not os.path.isdir(DSH_SESSIONS_DIR):
+        return out
+    for root, _dirs, files in os.walk(DSH_SESSIONS_DIR):
+        for fn in files:
+            if fn != "session.jsonl.zstd":
+                continue
+            path = os.path.join(root, fn)
+            try:
+                if cutoff_ms and os.path.getmtime(path) * 1000 < cutoff_ms - 86400000:
+                    continue
+                proc = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, text=True)
+            except Exception:
+                continue
+            depth = 0
+            cur_model, cur_provider = "", ""
+            try:
+                for line in proc.stdout:
+                    if '"model"' not in line and '"usage"' not in line and '"delegationDepth"' not in line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    t = ev.get("type")
+                    d = ev.get("data") or {}
+                    if t == "session":
+                        depth = int(ev.get("delegationDepth") or 0)
+                    elif t == "request/header":
+                        cfg = ((d.get("header") or {}).get("config") or {})
+                        cur_model = str(cfg.get("model") or "")
+                        cur_provider = str(cfg.get("provider") or "")
+                    elif t == "assistant/chunk":
+                        ch = d.get("chunk") or {}
+                        if ch.get("type") != "usage":
+                            continue
+                        ts = int(ev.get("time") or 0)
+                        if cutoff_ms and ts and ts < cutoff_ms:
+                            continue
+                        u = ch.get("usage") or {}
+                        if not cur_model:
+                            continue
+                        if model_filter and cur_model != model_filter:
+                            continue
+                        agent = "DSH·子代理" if depth > 0 else "DSH"
+                        key = (agent, cur_provider or "-", cur_model)
+                        acc = out.setdefault(key, [0, 0, 0, 0])
+                        acc[0] += 1
+                        acc[1] += int(u.get("inputTokens") or 0)
+                        acc[2] += int(u.get("outputTokens") or 0)
+                        acc[3] += int(u.get("cacheReadTokens") or 0)
+            finally:
+                try:
+                    proc.stdout.close()
+                    proc.terminate()
+                except Exception:
+                    pass
+    return out
+
+
+def _scan_claude_agents(days, model_filter):
+    out = {}
+    cutoff = time.time() - (days or 0) * 86400 if days else 0
+    if not os.path.isdir(CLAUDE_PROJECTS_DIR):
+        return out
+    for root, _dirs, files in os.walk(CLAUDE_PROJECTS_DIR):
+        for fn in files:
+            if not fn.endswith(".jsonl"):
+                continue
+            path = os.path.join(root, fn)
+            if cutoff and os.path.getmtime(path) < cutoff - 86400:
+                continue
+            agent = "Claude Code·子代理" if os.sep + "subagents" + os.sep in path else "Claude Code"
+            try:
+                fh = open(path, encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            with fh:
+                for line in fh:
+                    if '"usage"' not in line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = ev.get("message") or {}
+                    u = msg.get("usage") or {}
+                    if not isinstance(u, dict) or not u:
+                        continue
+                    mdl = str(msg.get("model") or "")
+                    if not mdl:
+                        continue
+                    if model_filter and mdl != model_filter:
+                        continue
+                    key = (agent, "anthropic", mdl)
+                    acc = out.setdefault(key, [0, 0, 0, 0])
+                    acc[0] += 1
+                    acc[1] += int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                    acc[2] += int(u.get("output_tokens") or 0)
+                    acc[3] += int(u.get("cache_read_input_tokens") or 0)
+    return out
+
+
+def _scan_nanobot_agents(days, model_filter):
+    out = {}
+    if not os.path.exists(LLM_USAGE_DB):
+        return out
+    try:
+        con = sqlite3.connect("file:" + LLM_USAGE_DB + "?mode=ro", uri=True)
+        where = ["input_tokens > 0", "finish_reason != 'error'"]
+        args = []
+        if days:
+            where.append("started_at_ms > (strftime('%s','now') - ?) * 1000")
+            args.append(int(days) * 86400)
+        if model_filter:
+            where.append("model = ?")
+            args.append(model_filter)
+        rows = con.execute(
+            "SELECT provider, model, source, COUNT(*), SUM(input_tokens), SUM(output_tokens), "
+            "SUM(cache_read_tokens) FROM llm_calls WHERE " + " AND ".join(where) +
+            " GROUP BY provider, model, source", args).fetchall()
+        con.close()
+    except Exception:
+        return out
+    for prov, mdl, src, n, ti, to, tc in rows:
+        agent = "nanobot·" + str(src or "user")
+        out[(agent, prov or "-", mdl or "-")] = [int(n or 0), int(ti or 0), int(to or 0), int(tc or 0)]
+    return out
+
+
+def query_agent_usage(days=7, model_filter=""):
+    merged = {}
+    for part in (_scan_dsh_agents(days, model_filter),
+                 _scan_claude_agents(days, model_filter),
+                 _scan_nanobot_agents(days, model_filter)):
+        for key, acc in part.items():
+            cur = merged.setdefault(key, [0, 0, 0, 0])
+            for i in range(4):
+                cur[i] += acc[i]
+    rows = []
+    for (agent, provider, model), (calls, ti, to, tc) in merged.items():
+        rows.append({"agent": agent, "provider": provider, "model": model,
+                     "calls": calls, "input": ti, "output": to, "cache": tc,
+                     "total": ti + to,
+                     "hit": round(100.0 * tc / ti, 1) if ti else 0})
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    return {"updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "days": days,
+            "model_filter": model_filter, "rows": rows,
+            "agents": sorted({r["agent"] for r in rows}),
+            "models": sorted({r["model"] for r in rows})}
+
+
+# --------------------------------------------------------------------------
 # 编排
 # --------------------------------------------------------------------------
 PROVIDER_META = [
@@ -1642,6 +1810,15 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in ("/calls", "/calls.html"):
             with open(os.path.join(BASE_DIR, "calls.html"), "rb") as f:
                 self._send(200, f.read(), "text/html")
+        elif self.path in ("/agents", "/agents.html"):
+            with open(os.path.join(BASE_DIR, "agents.html"), "rb") as f:
+                self._send(200, f.read(), "text/html")
+        elif self.path.startswith("/api/agents"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            days = int((q.get("days") or ["7"])[0])
+            mdl = (q.get("model") or [""])[0]
+            self._send(200, json.dumps(query_agent_usage(days, mdl), ensure_ascii=False))
         elif self.path.startswith("/api/calls"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
@@ -1921,3 +2098,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

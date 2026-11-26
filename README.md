@@ -45,6 +45,7 @@
   MiMo TP: 79% 月 79%
   ```
 - **JSON API** — `/api/status`、`/api/poll`、`/api/history`，方便接自己的脚本/桌面组件
+- **按 Agent 拆分** — `/agents`：把本机每个 agent 在各模型上的调用量与 token 列出来（点某一行还能只看那个模型）
 
 ## 快速开始
 
@@ -244,3 +245,17 @@ MIT
 - 账户余额：`billing DescribeAccountBalance`（Version `2018-07-09`，返回单位是**分**，面板已换算成元）
 
 未购买套餐时接口返回 `UNPURCHASED`，面板会显示「未购买」并照常展示账户余额。
+
+
+### 按 Agent 拆分（本机视角）
+
+平台侧（火山 / 腾讯 / MiniMax）只能按 **API Key / 端点**统计，分不出是哪个 agent 在调。
+想看「谁用了多少」，数据只能从各自的本地会话日志里算：
+
+| Agent | 数据源 | 拆分粒度 |
+|---|---|---|
+| DSH | `~/.dsh/sessions/**/session.jsonl.zstd` | `request/header` 取模型，`assistant/chunk` 取 usage；`delegationDepth>0` 记为「DSH·子代理」 |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `message.model` + `message.usage`；`subagents/` 单独算一个 agent |
+| nanobot | `~/.nanobot/llm_usage.sqlite3` | provider × model × source（user / dream / cron） |
+
+页面 `/agents`，接口 `/api/agents?days=7&model=`。默认近 7 天，可切换 1 / 7 / 30 / 90 天。
